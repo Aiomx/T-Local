@@ -51,11 +51,6 @@
       debugDocumentVersioning = "YES"
       debugServiceExtension = "internal"
       allowLocationSimulation = "YES">
-    <LocationScenarioReference
-       identifier = "/Users/yikewang/Library/Application Support/TelemetryScenarioStudio/DebugLocations/delivery-route.gpx"
-       referenceType = "0">
-    </LocationScenarioReference>
-    </LocationScenarioReference>
       <BuildableProductRunnable
          runnableDebuggingMode = "0">
          <BuildableReference

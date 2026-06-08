@@ -2,6 +2,69 @@ import Foundation
 
 #if canImport(NetworkExtension)
 import NetworkExtension
+import Security
+
+public enum VPNCredentialStore {
+    private static let service = "com.enterprise.telemetryqa.vpn"
+
+    public static func savePassword(_ password: String, reference: String) throws {
+        let account = normalizedReference(reference)
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account
+        ]
+        SecItemDelete(query as CFDictionary)
+
+        var attributes = query
+        attributes[kSecValueData as String] = Data(password.utf8)
+        attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+
+        let status = SecItemAdd(attributes as CFDictionary, nil)
+        guard status == errSecSuccess else {
+            throw VPNCredentialError.keychainWriteFailed(status)
+        }
+    }
+
+    public static func passwordPersistentReference(reference: String) throws -> Data {
+        let account = normalizedReference(reference)
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnPersistentRef as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess, let data = result as? Data else {
+            throw VPNCredentialError.keychainReadFailed(status)
+        }
+        return data
+    }
+
+    public static func normalizedReference(_ reference: String) -> String {
+        if reference.hasPrefix("keychain:") {
+            return String(reference.dropFirst("keychain:".count))
+        }
+        return reference
+    }
+}
+
+public enum VPNCredentialError: Error, LocalizedError, Sendable {
+    case keychainWriteFailed(OSStatus)
+    case keychainReadFailed(OSStatus)
+
+    public var errorDescription: String? {
+        switch self {
+        case let .keychainWriteFailed(status):
+            "Unable to save VPN credential to Keychain. OSStatus=\(status)."
+        case let .keychainReadFailed(status):
+            "Unable to read VPN credential from Keychain. Save the VPN secret on this iPhone first. OSStatus=\(status)."
+        }
+    }
+}
 
 @MainActor
 public final class PersonalVPNService: ObservableObject {
@@ -39,7 +102,7 @@ public final class PersonalVPNService: ObservableObject {
             switch node.authentication {
             case let .usernamePassword(username, passwordReference):
                 protocolConfiguration.username = username
-                protocolConfiguration.passwordReference = passwordReference.data(using: .utf8)
+                protocolConfiguration.passwordReference = try VPNCredentialStore.passwordPersistentReference(reference: passwordReference)
                 protocolConfiguration.authenticationMethod = .none
             case let .certificate(identityReference):
                 protocolConfiguration.identityReference = identityReference.data(using: .utf8)
@@ -67,6 +130,25 @@ public final class PersonalVPNService: ObservableObject {
 
     public func disconnect() {
         manager.connection.stopVPNTunnel()
+    }
+
+    public var statusText: String {
+        switch status {
+        case .invalid:
+            "Invalid"
+        case .disconnected:
+            "Disconnected"
+        case .connecting:
+            "Connecting"
+        case .connected:
+            "Connected"
+        case .reasserting:
+            "Reasserting"
+        case .disconnecting:
+            "Disconnecting"
+        @unknown default:
+            "Unknown"
+        }
     }
 
     @objc private func vpnStatusDidChange() {
@@ -101,6 +183,12 @@ extension NEVPNManager {
     }
 }
 #else
+public enum VPNCredentialStore {
+    public static func savePassword(_ password: String, reference: String) throws {}
+    public static func passwordPersistentReference(reference: String) throws -> Data { Data(reference.utf8) }
+    public static func normalizedReference(_ reference: String) -> String { reference }
+}
+
 @MainActor
 public final class PersonalVPNService: ObservableObject {
     @Published public private(set) var statusDescription = "Unsupported"
@@ -114,5 +202,9 @@ public final class PersonalVPNService: ObservableObject {
 
     public func connect() {}
     public func disconnect() {}
+
+    public var statusText: String {
+        statusDescription
+    }
 }
 #endif

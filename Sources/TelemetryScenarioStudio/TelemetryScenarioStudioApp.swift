@@ -174,6 +174,19 @@ final class ScenarioStudioStore {
         }
     }
 
+    var selectedVPNNode: VPNNode? {
+        vpnNodes.first { $0.id == selectedVPNNodeID }
+    }
+
+    var telemetryPreview: TelemetryEventPreview {
+        TelemetryEventPreview.scenarioPreview(
+            scenario: selectedScenario,
+            routePoint: selectedScenario.route.first,
+            ipResult: ipGeolocationResult,
+            dnsResult: dnsLeakResult
+        )
+    }
+
     init() {
         let savedLanguage = UserDefaults.standard.string(forKey: Self.languageDefaultsKey)
         self.language = savedLanguage.flatMap(StudioLanguage.init(rawValue:)) ?? .english
@@ -1151,6 +1164,35 @@ final class ScenarioStudioStore {
         isRunningNetworkDiagnostics = false
     }
 
+    func bindSelectedVPNNodeToScenario() {
+        guard let node = selectedVPNNode else {
+            networkDiagnosticsStatus = text("network_select_vpn_node")
+            return
+        }
+
+        let domains = networkDNSDomainsText
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let expectedCountry = networkExpectedCountryText
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        var scenario = selectedScenario
+        scenario.networkProfile = NetworkProfile(
+            name: node.displayName,
+            regionCode: node.regionCode,
+            vpnNode: node,
+            expectedCountryCode: expectedCountry.isEmpty ? node.regionCode : expectedCountry,
+            dnsTestDomains: domains.isEmpty ? ["example.com", "apple.com"] : domains
+        )
+        scenario.expectedTelemetryTags["vpn_region"] = node.regionCode
+        scenario.expectedTelemetryTags["vpn_node_id"] = node.id
+        selectedScenario = scenario
+        networkExpectedCountryText = scenario.networkProfile?.expectedCountryCode ?? ""
+        networkDiagnosticsStatus = text("network_bound_to_scenario")
+        exportedJSON = ""
+    }
+
     func addRecentLocation(_ location: SavedMapLocation) {
         var values = recentLocations.filter { !$0.matches(location) }
         values.insert(location, at: 0)
@@ -1441,8 +1483,12 @@ enum StudioLocalizations {
         "scenario_copy_name": "%@ Copy",
         "scenario_name_required": "Scenario name cannot be empty.",
         "scenario_delete_last_error": "Keep at least one scenario in the local library.",
-        "network_description": "Run VPN-oriented QA checks for node latency, public IP, DNS leak state, and kill switch readiness.",
+        "network_description": "Configure target-device VPN metadata for scenarios, then run Mac-local diagnostics for comparison. The iPhone exit IP changes only when Telemetry QA Console connects VPN on that iPhone.",
         "vpn_nodes": "VPN Nodes",
+        "target_vpn_notice": "Target-device IP changes are applied by the iOS QA Console on the iPhone. This Studio page binds the node to scenario JSON and previews telemetry fields.",
+        "bind_vpn_to_scenario": "Bind VPN to Scenario",
+        "network_select_vpn_node": "Select a VPN node first.",
+        "network_bound_to_scenario": "VPN node bound to the current scenario. Export JSON and import it in Telemetry QA Console.",
         "kill_switch": "Kill Switch",
         "kill_switch_on": "Kill switch on",
         "kill_switch_enabled_note": "When enabled, QA should block telemetry workflows if VPN connectivity drops. This panel records readiness; Packet Tunnel enforcement remains a later phase.",
@@ -1465,6 +1511,8 @@ enum StudioLocalizations {
         "tested_domains": "Tested Domains",
         "leak_detected": "Leak detected",
         "no_leak_detected": "No leak detected",
+        "telemetry_preview": "Telemetry Preview",
+        "telemetry_preview_description": "Read-only payload preview for QA. This does not send data to production telemetry.",
         "automatic": "Automatic",
         "developer_devices_found": "Found %d developer devices.",
         "developer_devices_select_first": "Select a device first.",
@@ -1667,8 +1715,12 @@ enum StudioLocalizations {
         "scenario_copy_name": "%@ 副本",
         "scenario_name_required": "场景名称不能为空。",
         "scenario_delete_last_error": "本地场景库至少需要保留一个场景。",
-        "network_description": "执行面向 VPN QA 的节点延迟、公网 IP、DNS 泄漏和 Kill switch 状态检查。",
+        "network_description": "为场景配置目标设备 VPN 元数据，并运行 Mac 本机诊断作为对比。iPhone 出口 IP 只会在 Telemetry QA Console 于该 iPhone 上连接 VPN 后改变。",
         "vpn_nodes": "VPN 节点",
+        "target_vpn_notice": "目标设备 IP 由 iOS QA Console 在 iPhone 上连接 VPN 后生效。本页负责把节点写入场景 JSON，并预览遥测字段。",
+        "bind_vpn_to_scenario": "绑定 VPN 到场景",
+        "network_select_vpn_node": "请先选择 VPN 节点。",
+        "network_bound_to_scenario": "VPN 节点已绑定到当前场景。请导出 JSON 并在 Telemetry QA Console 导入。",
         "kill_switch": "Kill switch",
         "kill_switch_on": "Kill switch 开",
         "kill_switch_enabled_note": "启用后，QA 应在 VPN 断开时阻断遥测流程。当前面板记录就绪状态，Packet Tunnel 强制策略放在后续阶段。",
@@ -1691,6 +1743,8 @@ enum StudioLocalizations {
         "tested_domains": "测试域名",
         "leak_detected": "发现泄漏",
         "no_leak_detected": "未发现泄漏",
+        "telemetry_preview": "遥测预览",
+        "telemetry_preview_description": "QA 只读 payload 预览，不会发送到生产遥测。",
         "automatic": "自动",
         "developer_devices_found": "发现 %d 台开发设备。",
         "developer_devices_select_first": "请先选择设备。",
@@ -3416,6 +3470,7 @@ struct NetworkDiagnosticsView: View {
                 NetworkVPNPanel(store: store)
                 NetworkEndpointPanel(store: store)
                 NetworkResultsPanel(store: store)
+                StudioTelemetryPreviewPanel(store: store)
             }
             .padding(.top, 52)
             .padding(.horizontal, 28)
@@ -3448,6 +3503,17 @@ struct NetworkVPNPanel: View {
             Text(store.killSwitchEnabled ? store.text("kill_switch_enabled_note") : store.text("kill_switch_disabled_note"))
                 .font(.callout)
                 .foregroundStyle(.secondary)
+
+            Text(store.text("target_vpn_notice"))
+                .font(.callout)
+                .foregroundStyle(.secondary)
+
+            HStack {
+                Button(store.text("bind_vpn_to_scenario")) {
+                    store.bindSelectedVPNNodeToScenario()
+                }
+                Button(store.text("export_json"), action: store.exportJSON)
+            }
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -3568,6 +3634,38 @@ struct NetworkResultsPanel: View {
                 .lineLimit(2)
         }
         .frame(minWidth: 180, alignment: .leading)
+    }
+}
+
+struct StudioTelemetryPreviewPanel: View {
+    @Bindable var store: ScenarioStudioStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Label(store.text("telemetry_preview"), systemImage: "doc.text.magnifyingglass")
+                .font(.title3.bold())
+
+            Text(store.text("telemetry_preview_description"))
+                .font(.callout)
+                .foregroundStyle(.secondary)
+
+            Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 8) {
+                ForEach(store.telemetryPreview.payloadFields, id: \.0) { key, value in
+                    GridRow {
+                        Text(key)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 150, alignment: .leading)
+                        Text(value)
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(.separator, lineWidth: 1))
     }
 }
 
