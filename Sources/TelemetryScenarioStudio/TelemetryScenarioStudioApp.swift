@@ -6,20 +6,55 @@ import TelemetryLocationKit
 @main
 struct TelemetryScenarioStudioApp: App {
     @State private var store = ScenarioStudioStore()
+    @NSApplicationDelegateAdaptor(StudioAppDelegate.self) private var appDelegate
 
     var body: some Scene {
         WindowGroup {
             ScenarioStudioView(store: store)
                 .frame(minWidth: 980, minHeight: 680)
+                .onAppear {
+                    appDelegate.store = store
+                }
         }
         .windowStyle(.hiddenTitleBar)
     }
 }
 
 @MainActor
+final class StudioAppDelegate: NSObject, NSApplicationDelegate {
+    weak var store: ScenarioStudioStore?
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let store, store.hasActiveSimulation else {
+            return .terminateNow
+        }
+
+        let alert = NSAlert()
+        alert.messageText = store.text("active_simulation_exit_title")
+        alert.informativeText = store.text("active_simulation_exit_body")
+        alert.addButton(withTitle: store.text("clear_and_quit"))
+        alert.addButton(withTitle: store.text("cancel"))
+        alert.addButton(withTitle: store.text("quit_without_clearing"))
+
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            Task {
+                await store.clearAllSimulatedLocationBeforeExit()
+                NSApp.reply(toApplicationShouldTerminate: true)
+            }
+            return .terminateLater
+        case .alertSecondButtonReturn:
+            return .terminateCancel
+        default:
+            return .terminateNow
+        }
+    }
+}
+
+@MainActor
 @Observable
 final class ScenarioStudioStore {
-    var scenarios: [TelemetryScenario] = ScenarioTemplates.all
+    var scenarios: [TelemetryScenario] = []
     var selectedScenarioID: String?
     var selectedModule: StudioModule = .scenarios
     var sidebarSelection: StudioSidebarSelection?
@@ -68,6 +103,39 @@ final class ScenarioStudioStore {
     var exportedGPX: String = ""
     var exportedJSON: String = ""
     var importText: String = ""
+    var scenarioRenameText: String = ""
+    var recentScenarioIDs: [String] = []
+    var networkLatencyEndpointText = "https://www.apple.com/library/test/success.html"
+    var networkIPEndpointText = "https://api.ipify.org?format=json"
+    var networkDNSDomainsText = "example.com, apple.com"
+    var networkExpectedCountryText = ""
+    var networkDiagnosticsStatus: String?
+    var isRunningNetworkDiagnostics = false
+    var latencyResult: LatencyResult?
+    var ipGeolocationResult: IPGeolocationResult?
+    var dnsLeakResult: DNSLeakResult?
+    var killSwitchEnabled = false
+    var selectedVPNNodeID: String?
+    var vpnNodes: [VPNNode] = [
+        VPNNode(
+            displayName: "QA US West",
+            regionCode: "US",
+            serverHost: "us-west.vpn.internal",
+            remoteIdentifier: "us-west.vpn.internal",
+            authentication: .usernamePassword(username: "qa", passwordReference: "keychain:vpn-us-west"),
+            dnsServers: ["1.1.1.1"],
+            healthCheckURL: URL(string: "https://www.apple.com/library/test/success.html")
+        ),
+        VPNNode(
+            displayName: "QA Singapore",
+            regionCode: "SG",
+            serverHost: "sg.vpn.internal",
+            remoteIdentifier: "sg.vpn.internal",
+            authentication: .usernamePassword(username: "qa", passwordReference: "keychain:vpn-sg"),
+            dnsServers: ["8.8.8.8"],
+            healthCheckURL: URL(string: "https://www.apple.com/library/test/success.html")
+        )
+    ]
     var errorMessage: String?
     var language: StudioLanguage {
         didSet {
@@ -76,12 +144,15 @@ final class ScenarioStudioStore {
     }
 
     private static let languageDefaultsKey = "TelemetryScenarioStudio.language"
+    private static let scenariosDefaultsKey = "TelemetryScenarioStudio.scenarios"
+    private static let recentScenarioIDsDefaultsKey = "TelemetryScenarioStudio.recentScenarioIDs"
     private static let recentLocationsDefaultsKey = "TelemetryScenarioStudio.recentLocations"
     private static let favoriteLocationsDefaultsKey = "TelemetryScenarioStudio.favoriteLocations"
     @ObservationIgnored private var routePlaybackTask: Task<Void, Never>?
     @ObservationIgnored private var gpxPlaybackTask: Task<Void, Never>?
     private let developerDeviceService = DeveloperDeviceService()
     private let xcodeDebugSessionService = XcodeDebugSessionService()
+    private let networkDiagnostics = URLSessionNetworkDiagnosticsClient()
 
     var selectedScenario: TelemetryScenario {
         get {
@@ -97,12 +168,17 @@ final class ScenarioStudioStore {
             }
             selectedScenarioID = newValue.id
             sidebarSelection = .scenario(newValue.id)
+            scenarioRenameText = newValue.name
+            markScenarioRecentlyOpened(newValue.id)
+            saveScenarios()
         }
     }
 
     init() {
         let savedLanguage = UserDefaults.standard.string(forKey: Self.languageDefaultsKey)
         self.language = savedLanguage.flatMap(StudioLanguage.init(rawValue:)) ?? .english
+        self.scenarios = Self.loadScenarios()
+        self.recentScenarioIDs = UserDefaults.standard.stringArray(forKey: Self.recentScenarioIDsDefaultsKey) ?? []
         let defaultWorkspacePath = xcodeDebugSessionService.defaultWorkspacePath()
         self.xcodeWorkspacePath = defaultWorkspacePath
         self.xcodeWorkspaceName = URL(fileURLWithPath: defaultWorkspacePath).lastPathComponent
@@ -110,8 +186,10 @@ final class ScenarioStudioStore {
         selectedScenarioID = scenarios.first?.id
         sidebarSelection = scenarios.first.map { .scenario($0.id) }
         selectedPointID = scenarios.first?.route.first?.id
+        scenarioRenameText = scenarios.first?.name ?? ""
         recentLocations = Self.loadLocations(forKey: Self.recentLocationsDefaultsKey)
         favoriteLocations = Self.loadLocations(forKey: Self.favoriteLocationsDefaultsKey)
+        selectedVPNNodeID = vpnNodes.first?.id
     }
 
     func addPoint() {
@@ -396,6 +474,9 @@ final class ScenarioStudioStore {
             selectedScenarioID = scenario.id
             sidebarSelection = .scenario(scenario.id)
             selectedPointID = scenario.route.first?.id
+            scenarioRenameText = scenario.name
+            markScenarioRecentlyOpened(scenario.id)
+            saveScenarios()
             plannedRoute = []
             errorMessage = nil
         } catch {
@@ -410,9 +491,13 @@ final class ScenarioStudioStore {
             selectedModule = .scenarios
             selectedScenarioID = id
             selectedPointID = selectedScenario.route.first?.id
+            scenarioRenameText = selectedScenario.name
+            markScenarioRecentlyOpened(id)
             plannedRoute = []
         case .developerDevices:
             selectedModule = .developerDevices
+        case .network:
+            selectedModule = .network
         case .settings:
             selectedModule = .settings
         case nil:
@@ -429,6 +514,8 @@ final class ScenarioStudioStore {
             sidebarSelection = id.map { .scenario($0) }
         case .developerDevices:
             sidebarSelection = .developerDevices
+        case .network:
+            sidebarSelection = .network
         case .settings:
             sidebarSelection = .settings
         }
@@ -903,6 +990,167 @@ final class ScenarioStudioStore {
         )
     }
 
+    var hasActiveSimulation: Bool {
+        routePlaybackState == .running ||
+            routePlaybackState == .paused ||
+            gpxPlaybackState.state == .running ||
+            (deviceLocationStatus.source != .none && deviceLocationStatus.source != .cleared)
+    }
+
+    var activeSimulationSummary: String {
+        let device = deviceLocationStatus.deviceName ?? selectedDevice?.name ?? text("automatic")
+        let source = deviceLocationStatus.source.title(in: self)
+        let coordinate: String
+        if let value = deviceLocationStatus.coordinate {
+            coordinate = String(format: "%.6f, %.6f", value.latitude, value.longitude)
+        } else {
+            coordinate = "-"
+        }
+        return String(format: text("active_simulation_summary"), device, source, coordinate)
+    }
+
+    func clearAllSimulatedLocationBeforeExit() async {
+        stopRoutePlayback(resetToIdle: true)
+        stopGPXPlayback()
+        await clearSelectedDeviceLocation()
+    }
+
+    func duplicateSelectedScenario() {
+        let original = selectedScenario
+        let scenario = TelemetryScenario(
+            name: String(format: text("scenario_copy_name"), original.name),
+            description: original.description,
+            route: original.route.map { point in
+                RoutePoint(
+                    latitude: point.latitude,
+                    longitude: point.longitude,
+                    altitude: point.altitude,
+                    horizontalAccuracy: point.horizontalAccuracy,
+                    verticalAccuracy: point.verticalAccuracy,
+                    speed: point.speed,
+                    course: point.course,
+                    elapsedSeconds: point.elapsedSeconds,
+                    dwellSeconds: point.dwellSeconds,
+                    label: point.label
+                )
+            },
+            networkProfile: original.networkProfile,
+            expectedTelemetryTags: original.expectedTelemetryTags
+        )
+        scenarios.append(scenario)
+        selectedScenarioID = scenario.id
+        sidebarSelection = .scenario(scenario.id)
+        scenarioRenameText = scenario.name
+        selectedPointID = scenario.route.first?.id
+        markScenarioRecentlyOpened(scenario.id)
+        saveScenarios()
+    }
+
+    func renameSelectedScenario() {
+        let name = scenarioRenameText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else {
+            errorMessage = text("scenario_name_required")
+            return
+        }
+        var scenario = selectedScenario
+        scenario.name = name
+        selectedScenario = scenario
+        errorMessage = nil
+    }
+
+    func deleteSelectedScenario() {
+        guard scenarios.count > 1, let selectedScenarioID else {
+            errorMessage = text("scenario_delete_last_error")
+            return
+        }
+        scenarios.removeAll { $0.id == selectedScenarioID }
+        recentScenarioIDs.removeAll { $0 == selectedScenarioID }
+        let next = scenarios.first
+        self.selectedScenarioID = next?.id
+        sidebarSelection = next.map { .scenario($0.id) }
+        selectedPointID = next?.route.first?.id
+        scenarioRenameText = next?.name ?? ""
+        saveRecentScenarioIDs()
+        saveScenarios()
+        errorMessage = nil
+    }
+
+    func resetScenarioLibraryToTemplates() {
+        scenarios = ScenarioTemplates.all
+        selectedScenarioID = scenarios.first?.id
+        sidebarSelection = scenarios.first.map { .scenario($0.id) }
+        selectedPointID = scenarios.first?.route.first?.id
+        scenarioRenameText = scenarios.first?.name ?? ""
+        recentScenarioIDs = []
+        saveRecentScenarioIDs()
+        saveScenarios()
+    }
+
+    var recentScenarios: [TelemetryScenario] {
+        recentScenarioIDs.compactMap { id in
+            scenarios.first { $0.id == id }
+        }
+    }
+
+    private func markScenarioRecentlyOpened(_ id: String) {
+        recentScenarioIDs.removeAll { $0 == id }
+        recentScenarioIDs.insert(id, at: 0)
+        recentScenarioIDs = Array(recentScenarioIDs.prefix(8))
+        saveRecentScenarioIDs()
+    }
+
+    private func saveScenarios() {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        if let data = try? encoder.encode(scenarios) {
+            UserDefaults.standard.set(data, forKey: Self.scenariosDefaultsKey)
+        }
+    }
+
+    private static func loadScenarios() -> [TelemetryScenario] {
+        let decoder = JSONDecoder()
+        guard let data = UserDefaults.standard.data(forKey: Self.scenariosDefaultsKey),
+              let scenarios = try? decoder.decode([TelemetryScenario].self, from: data),
+              !scenarios.isEmpty else {
+            return ScenarioTemplates.all
+        }
+        return scenarios
+    }
+
+    private func saveRecentScenarioIDs() {
+        UserDefaults.standard.set(recentScenarioIDs, forKey: Self.recentScenarioIDsDefaultsKey)
+    }
+
+    func runNetworkDiagnostics() async {
+        guard let latencyURL = URL(string: networkLatencyEndpointText),
+              let ipURL = URL(string: networkIPEndpointText) else {
+            networkDiagnosticsStatus = text("network_invalid_endpoints")
+            return
+        }
+
+        isRunningNetworkDiagnostics = true
+        networkDiagnosticsStatus = text("network_running")
+        do {
+            let domains = networkDNSDomainsText
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            async let latency = networkDiagnostics.measureLatency(to: latencyURL)
+            async let ip = networkDiagnostics.fetchIPGeolocation(from: ipURL)
+            async let dns = networkDiagnostics.checkDNSLeak(
+                domains: domains.isEmpty ? ["example.com", "apple.com"] : domains,
+                expectedCountryCode: networkExpectedCountryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : networkExpectedCountryText
+            )
+            latencyResult = try await latency
+            ipGeolocationResult = try await ip
+            dnsLeakResult = try await dns
+            networkDiagnosticsStatus = text("network_completed")
+        } catch {
+            networkDiagnosticsStatus = error.localizedDescription
+        }
+        isRunningNetworkDiagnostics = false
+    }
+
     func addRecentLocation(_ location: SavedMapLocation) {
         var values = recentLocations.filter { !$0.matches(location) }
         values.insert(location, at: 0)
@@ -983,12 +1231,14 @@ enum StudioLanguage: String, CaseIterable, Identifiable {
 enum StudioSidebarSelection: Hashable {
     case scenario(String)
     case developerDevices
+    case network
     case settings
 }
 
 enum StudioModule: String, CaseIterable, Identifiable {
     case scenarios
     case developerDevices
+    case network
     case settings
 
     var id: String { rawValue }
@@ -999,6 +1249,8 @@ enum StudioModule: String, CaseIterable, Identifiable {
             "map"
         case .developerDevices:
             "iphone.gen3"
+        case .network:
+            "network"
         case .settings:
             "gearshape"
         }
@@ -1011,6 +1263,8 @@ enum StudioModule: String, CaseIterable, Identifiable {
             store.text("scenarios")
         case .developerDevices:
             store.text("developer_devices")
+        case .network:
+            store.text("network")
         case .settings:
             store.text("settings")
         }
@@ -1031,6 +1285,8 @@ enum StudioLocalizations {
         "app_title": "Telemetry Scenario Studio",
         "scenarios": "Scenarios",
         "settings": "Settings",
+        "network": "Network",
+        "diagnostics": "Diagnostics",
         "developer_devices": "Developer Devices",
         "developer_devices_title": "Developer Devices",
         "developer_devices_description": "List trusted Apple developer devices and set simulator or physical device GPS locations.",
@@ -1166,6 +1422,49 @@ enum StudioLocalizations {
         "health_status_warn": "Warn",
         "health_status_fail": "Fail",
         "health_status_unknown": "Unknown",
+        "active_simulation_title": "Simulated location is active",
+        "active_simulation_summary": "Device: %@ · Source: %@ · Coordinate: %@",
+        "clear_simulation_now": "Clear Simulation",
+        "active_simulation_exit_title": "Simulated location is still active",
+        "active_simulation_exit_body": "Clear the selected device location before quitting so QA devices do not stay in a simulated state.",
+        "clear_and_quit": "Clear and Quit",
+        "quit_without_clearing": "Quit Without Clearing",
+        "cancel": "Cancel",
+        "scenario_library": "Scenario Library",
+        "scenario_library_description": "Manage local scenarios, recent opens, import/export, copies, names, and deletion.",
+        "scenario_name": "Scenario name",
+        "rename_scenario": "Rename",
+        "duplicate_scenario": "Duplicate",
+        "delete_scenario": "Delete",
+        "reset_templates": "Reset Templates",
+        "recent_scenarios": "Recent Scenarios",
+        "scenario_copy_name": "%@ Copy",
+        "scenario_name_required": "Scenario name cannot be empty.",
+        "scenario_delete_last_error": "Keep at least one scenario in the local library.",
+        "network_description": "Run VPN-oriented QA checks for node latency, public IP, DNS leak state, and kill switch readiness.",
+        "vpn_nodes": "VPN Nodes",
+        "kill_switch": "Kill Switch",
+        "kill_switch_on": "Kill switch on",
+        "kill_switch_enabled_note": "When enabled, QA should block telemetry workflows if VPN connectivity drops. This panel records readiness; Packet Tunnel enforcement remains a later phase.",
+        "kill_switch_disabled_note": "Kill switch is disabled. VPN disconnects will not block telemetry workflows in this QA console.",
+        "network_endpoints": "Network Endpoints",
+        "latency_endpoint": "Latency endpoint",
+        "ip_endpoint": "IP endpoint",
+        "dns_domains": "DNS domains",
+        "expected_country": "Expected country",
+        "run_network_diagnostics": "Run Diagnostics",
+        "network_running": "Running...",
+        "network_completed": "Network diagnostics completed.",
+        "network_invalid_endpoints": "Enter valid latency and IP endpoints.",
+        "network_results": "Network Results",
+        "latency": "Latency",
+        "public_ip": "Public IP",
+        "dns_leak": "DNS Leak",
+        "status_code": "Status Code",
+        "country": "Country",
+        "tested_domains": "Tested Domains",
+        "leak_detected": "Leak detected",
+        "no_leak_detected": "No leak detected",
         "automatic": "Automatic",
         "developer_devices_found": "Found %d developer devices.",
         "developer_devices_select_first": "Select a device first.",
@@ -1212,6 +1511,8 @@ enum StudioLocalizations {
         "app_title": "遥测场景工作台",
         "scenarios": "场景",
         "settings": "设置",
+        "network": "网络",
+        "diagnostics": "诊断",
         "developer_devices": "开发设备",
         "developer_devices_title": "开发设备",
         "developer_devices_description": "列出受信任 Apple 开发设备，并设置模拟器或真机 GPS 位置。",
@@ -1347,6 +1648,49 @@ enum StudioLocalizations {
         "health_status_warn": "警告",
         "health_status_fail": "失败",
         "health_status_unknown": "未知",
+        "active_simulation_title": "模拟定位正在生效",
+        "active_simulation_summary": "设备：%@ · 来源：%@ · 坐标：%@",
+        "clear_simulation_now": "清除模拟",
+        "active_simulation_exit_title": "模拟定位仍在生效",
+        "active_simulation_exit_body": "退出前建议清除选中设备定位，避免 QA 设备停留在模拟定位状态。",
+        "clear_and_quit": "清除并退出",
+        "quit_without_clearing": "直接退出",
+        "cancel": "取消",
+        "scenario_library": "场景库",
+        "scenario_library_description": "管理本地场景、最近打开、导入导出、复制、重命名和删除。",
+        "scenario_name": "场景名称",
+        "rename_scenario": "重命名",
+        "duplicate_scenario": "复制",
+        "delete_scenario": "删除",
+        "reset_templates": "重置模板",
+        "recent_scenarios": "最近场景",
+        "scenario_copy_name": "%@ 副本",
+        "scenario_name_required": "场景名称不能为空。",
+        "scenario_delete_last_error": "本地场景库至少需要保留一个场景。",
+        "network_description": "执行面向 VPN QA 的节点延迟、公网 IP、DNS 泄漏和 Kill switch 状态检查。",
+        "vpn_nodes": "VPN 节点",
+        "kill_switch": "Kill switch",
+        "kill_switch_on": "Kill switch 开",
+        "kill_switch_enabled_note": "启用后，QA 应在 VPN 断开时阻断遥测流程。当前面板记录就绪状态，Packet Tunnel 强制策略放在后续阶段。",
+        "kill_switch_disabled_note": "Kill switch 未启用。VPN 断开不会在此 QA 控制台阻断遥测流程。",
+        "network_endpoints": "网络端点",
+        "latency_endpoint": "延迟端点",
+        "ip_endpoint": "IP 端点",
+        "dns_domains": "DNS 域名",
+        "expected_country": "期望国家",
+        "run_network_diagnostics": "运行诊断",
+        "network_running": "运行中...",
+        "network_completed": "网络诊断已完成。",
+        "network_invalid_endpoints": "请输入有效的延迟和 IP 端点。",
+        "network_results": "网络结果",
+        "latency": "延迟",
+        "public_ip": "公网 IP",
+        "dns_leak": "DNS 泄漏",
+        "status_code": "状态码",
+        "country": "国家",
+        "tested_domains": "测试域名",
+        "leak_detected": "发现泄漏",
+        "no_leak_detected": "未发现泄漏",
         "automatic": "自动",
         "developer_devices_found": "发现 %d 台开发设备。",
         "developer_devices_select_first": "请先选择设备。",
@@ -1761,11 +2105,30 @@ struct ScenarioStudioView: View {
     private var detail: some View {
         switch store.sidebarSelection {
         case .developerDevices:
-            DeveloperDevicesView(store: store)
+            contentWithSimulationBanner {
+                DeveloperDevicesView(store: store)
+            }
+        case .network:
+            contentWithSimulationBanner {
+                NetworkDiagnosticsView(store: store)
+            }
         case .settings:
-            SettingsView(store: store)
+            contentWithSimulationBanner {
+                SettingsView(store: store)
+            }
         default:
-            ScenarioEditorView(store: store)
+            contentWithSimulationBanner {
+                ScenarioEditorView(store: store)
+            }
+        }
+    }
+
+    private func contentWithSimulationBanner<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        VStack(spacing: 0) {
+            if store.hasActiveSimulation {
+                ActiveSimulationBanner(store: store)
+            }
+            content()
         }
     }
 }
@@ -1799,6 +2162,15 @@ struct EmbeddedStudioSidebar: View {
                 isSelected: store.sidebarSelection == .developerDevices
             ) {
                 store.selectSidebar(.developerDevices)
+            }
+
+            StudioSidebarRow(
+                title: store.text("network"),
+                subtitle: store.killSwitchEnabled ? store.text("kill_switch_on") : store.text("diagnostics"),
+                systemImage: "network",
+                isSelected: store.sidebarSelection == .network
+            ) {
+                store.selectSidebar(.network)
             }
 
             Spacer(minLength: 0)
@@ -1902,6 +2274,35 @@ struct StudioVisualEffectBackground: NSViewRepresentable {
     func updateNSView(_ view: NSVisualEffectView, context: Context) {
         view.material = material
         view.blendingMode = blendingMode
+    }
+}
+
+struct ActiveSimulationBanner: View {
+    @Bindable var store: ScenarioStudioStore
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "location.fill")
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(store.text("active_simulation_title"))
+                    .font(.callout.weight(.semibold))
+                Text(store.activeSimulationSummary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer()
+            Button(store.text("clear_simulation_now")) {
+                Task { await store.clearAllSimulatedLocationBeforeExit() }
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 10)
+        .background(Color.orange.opacity(0.10))
+        .overlay(alignment: .bottom) {
+            Divider().opacity(0.5)
+        }
     }
 }
 
@@ -2832,6 +3233,7 @@ struct ScenarioEditorView: View {
                         .foregroundStyle(.red)
                 }
 
+                ScenarioLibraryPanel(store: store)
                 ParameterizedTemplatePanel(store: store)
                 ScenarioMapPanel(store: store)
                 RoutePointTable(store: store)
@@ -2849,6 +3251,66 @@ struct ScenarioEditorView: View {
             }
             .padding(24)
         }
+    }
+}
+
+struct ScenarioLibraryPanel: View {
+    @Bindable var store: ScenarioStudioStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Label(store.text("scenario_library"), systemImage: "folder")
+                        .font(.headline)
+                    Text(store.text("scenario_library_description"))
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button(store.text("duplicate_scenario")) {
+                    store.duplicateSelectedScenario()
+                }
+                Button(store.text("delete_scenario")) {
+                    store.deleteSelectedScenario()
+                }
+                .disabled(store.scenarios.count <= 1)
+                Button(store.text("reset_templates")) {
+                    store.resetScenarioLibraryToTemplates()
+                }
+            }
+
+            HStack(spacing: 8) {
+                TextField(store.text("scenario_name"), text: $store.scenarioRenameText)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 360)
+                Button(store.text("rename_scenario")) {
+                    store.renameSelectedScenario()
+                }
+            }
+
+            if !store.recentScenarios.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(store.text("recent_scenarios"))
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    HStack {
+                        ForEach(store.recentScenarios.prefix(5)) { scenario in
+                            Button(scenario.name) {
+                                store.selectSidebar(.scenario(scenario.id))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(.separator, lineWidth: 1)
+        )
     }
 }
 
@@ -2928,6 +3390,184 @@ struct ParameterizedTemplatePanel: View {
             RoundedRectangle(cornerRadius: 10)
                 .stroke(.separator, lineWidth: 1)
         )
+    }
+}
+
+struct NetworkDiagnosticsView: View {
+    @Bindable var store: ScenarioStudioStore
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(store.text("network"))
+                            .font(.largeTitle.bold())
+                        Text(store.text("network_description"))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button(store.isRunningNetworkDiagnostics ? store.text("network_running") : store.text("run_network_diagnostics")) {
+                        Task { await store.runNetworkDiagnostics() }
+                    }
+                    .disabled(store.isRunningNetworkDiagnostics)
+                }
+
+                NetworkVPNPanel(store: store)
+                NetworkEndpointPanel(store: store)
+                NetworkResultsPanel(store: store)
+            }
+            .padding(.top, 52)
+            .padding(.horizontal, 28)
+            .padding(.bottom, 28)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+}
+
+struct NetworkVPNPanel: View {
+    @Bindable var store: ScenarioStudioStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Label(store.text("vpn_nodes"), systemImage: "lock.shield")
+                .font(.title3.bold())
+
+            Picker(store.text("vpn_nodes"), selection: $store.selectedVPNNodeID) {
+                ForEach(store.vpnNodes) { node in
+                    Text("\(node.displayName) · \(node.regionCode)").tag(Optional(node.id))
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(maxWidth: 620)
+
+            Toggle(store.text("kill_switch"), isOn: $store.killSwitchEnabled)
+                .toggleStyle(.switch)
+
+            Text(store.killSwitchEnabled ? store.text("kill_switch_enabled_note") : store.text("kill_switch_disabled_note"))
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(.separator, lineWidth: 1))
+    }
+}
+
+struct NetworkEndpointPanel: View {
+    @Bindable var store: ScenarioStudioStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label(store.text("network_endpoints"), systemImage: "point.3.connected.trianglepath.dotted")
+                .font(.title3.bold())
+
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 10) {
+                GridRow {
+                    Text(store.text("latency_endpoint"))
+                    TextField(store.text("latency_endpoint"), text: $store.networkLatencyEndpointText)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(minWidth: 420)
+                }
+                GridRow {
+                    Text(store.text("ip_endpoint"))
+                    TextField(store.text("ip_endpoint"), text: $store.networkIPEndpointText)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(minWidth: 420)
+                }
+                GridRow {
+                    Text(store.text("dns_domains"))
+                    TextField(store.text("dns_domains"), text: $store.networkDNSDomainsText)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(minWidth: 420)
+                }
+                GridRow {
+                    Text(store.text("expected_country"))
+                    TextField(store.text("expected_country"), text: $store.networkExpectedCountryText)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 160)
+                }
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(.separator, lineWidth: 1))
+    }
+}
+
+struct NetworkResultsPanel: View {
+    @Bindable var store: ScenarioStudioStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Label(store.text("network_results"), systemImage: "chart.bar.xaxis")
+                .font(.title3.bold())
+
+            if let status = store.networkDiagnosticsStatus {
+                Text(status)
+                    .foregroundStyle(.secondary)
+            }
+
+            Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 10) {
+                GridRow {
+                    resultCell(store.text("latency"), latencyText)
+                    resultCell(store.text("public_ip"), ipText)
+                    resultCell(store.text("dns_leak"), dnsText)
+                }
+                GridRow {
+                    resultCell(store.text("status_code"), store.latencyResult?.statusCode.map(String.init) ?? "-")
+                    resultCell(store.text("country"), store.ipGeolocationResult?.countryCode ?? "-")
+                    resultCell(store.text("tested_domains"), store.dnsLeakResult?.testedDomains.joined(separator: ", ") ?? "-")
+                }
+            }
+
+            if let raw = store.ipGeolocationResult?.raw, !raw.isEmpty {
+                Text(raw.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: "\n"))
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(.separator, lineWidth: 1))
+    }
+
+    private var latencyText: String {
+        guard let latency = store.latencyResult else {
+            return "-"
+        }
+        return String(format: "%.0f ms", latency.milliseconds)
+    }
+
+    private var ipText: String {
+        store.ipGeolocationResult?.ipAddress ?? "-"
+    }
+
+    private var dnsText: String {
+        guard let dns = store.dnsLeakResult else {
+            return "-"
+        }
+        return dns.leakDetected ? store.text("leak_detected") : store.text("no_leak_detected")
+    }
+
+    private func resultCell(_ title: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.system(.callout, design: .monospaced))
+                .textSelection(.enabled)
+                .lineLimit(2)
+        }
+        .frame(minWidth: 180, alignment: .leading)
     }
 }
 
