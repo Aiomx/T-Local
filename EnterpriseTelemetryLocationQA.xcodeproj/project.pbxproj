@@ -1,0 +1,846 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		1826CE4EC8B03B902801F389 /* GPXExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = E109D871339F012AFA3471DE /* GPXExporter.swift */; };
+		1CD0D89438166C0E498B8DF9 /* TelemetryScenario.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21A638142EB2BB177FD27642 /* TelemetryScenario.swift */; };
+		1E18C6A7CF314F6DE8D60C09 /* TelemetryLocationKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = FD56AF0512601E25C84760C8 /* TelemetryLocationKit.framework */; };
+		2EA9BE06FA166F378B3865CE /* TelemetryLocationKit.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = FD56AF0512601E25C84760C8 /* TelemetryLocationKit.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		2EE95CF08E10EA1F0278507E /* TelemetryLocationKit.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = FD56AF0512601E25C84760C8 /* TelemetryLocationKit.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		325BC6D3BB567A2ACDE59FFF /* XcodeDebugSessionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD879BDABF72FB82C01E6140 /* XcodeDebugSessionService.swift */; };
+		33A37880FF3011E4C4B10211 /* CoreLocationProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 883DC623A0AF250DA4AFC3CF /* CoreLocationProvider.swift */; };
+		36F6588D9436084D19A7815A /* CoreLocationProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 883DC623A0AF250DA4AFC3CF /* CoreLocationProvider.swift */; };
+		3857CA885CCAE00D4D1F5C8E /* MockRouteLocationProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2627B77B9D3A860FAA7898F7 /* MockRouteLocationProvider.swift */; };
+		452FEF8A749A523B2FD94DA6 /* RouteInterpolator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BC769CA94F56567D6852084 /* RouteInterpolator.swift */; };
+		559ECD2D4954FFB39E599CA7 /* ScenarioCodec.swift in Sources */ = {isa = PBXBuildFile; fileRef = 276B74AFFAA802B407B76855 /* ScenarioCodec.swift */; };
+		561DB034CC513BB394C1B1E7 /* ScenarioCodec.swift in Sources */ = {isa = PBXBuildFile; fileRef = 276B74AFFAA802B407B76855 /* ScenarioCodec.swift */; };
+		5A83820BCDD2206BCE210D26 /* DeveloperDeviceService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEA79EFA8372ABB01A04FFD9 /* DeveloperDeviceService.swift */; };
+		638DACBF6A75088232A3E9E0 /* TelemetryQAConsoleApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 207FFA0685FCBEEC77EEA6E3 /* TelemetryQAConsoleApp.swift */; };
+		6540CC62E5207BCC7FF889D1 /* VPNService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B7C0EAA8FDC432A0B5E8379 /* VPNService.swift */; };
+		66B4E913D881BFFBC9109974 /* TelemetryLocationKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C7C55E24893419178B6070CA /* TelemetryLocationKit.framework */; };
+		69FFBC1D74AB84C54D85E23F /* GPXExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = E109D871339F012AFA3471DE /* GPXExporter.swift */; };
+		6D115F63FD865BDDB7BCD62B /* LocationProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE26FCC0DD59DC54040C2C02 /* LocationProvider.swift */; };
+		736CE9108D2595EFA655CB4B /* TelemetryLocationKit.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = C7C55E24893419178B6070CA /* TelemetryLocationKit.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		77226E8D2B546EB2F0F4CED5 /* ScenarioTemplates.swift in Sources */ = {isa = PBXBuildFile; fileRef = E257145B8948E2C3B17E14FD /* ScenarioTemplates.swift */; };
+		79E4A2ABA8942050E385FDF4 /* VPNService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B7C0EAA8FDC432A0B5E8379 /* VPNService.swift */; };
+		7C66E48FA2DA23266332C911 /* LocationProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE26FCC0DD59DC54040C2C02 /* LocationProvider.swift */; };
+		92D2A9171C3D1B2E2C11BF4D /* ScenarioCodecTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 15D0899DF6B52DCC1B521E62 /* ScenarioCodecTests.swift */; };
+		AA7B544BA1B0B3181BEFF965 /* NetworkDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 245AA6F7DDCC1B350A63EE5E /* NetworkDiagnostics.swift */; };
+		AD0940E93A5EE4784C91D928 /* RouteInterpolator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BC769CA94F56567D6852084 /* RouteInterpolator.swift */; };
+		C2F46E3E8C2C0969BABB7CC7 /* NetworkDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 245AA6F7DDCC1B350A63EE5E /* NetworkDiagnostics.swift */; };
+		C5E8A96C2A23195B2F21F8C7 /* TelemetryScenarioStudioApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C5ADA99DB4CC7A7AEB631BC /* TelemetryScenarioStudioApp.swift */; };
+		CACE0D85EA896B9169A13065 /* TelemetryLocationKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = FD56AF0512601E25C84760C8 /* TelemetryLocationKit.framework */; };
+		CC5CAE90FE93C12094CA4435 /* ScenarioTemplates.swift in Sources */ = {isa = PBXBuildFile; fileRef = E257145B8948E2C3B17E14FD /* ScenarioTemplates.swift */; };
+		CD355E8B9CB887CB0BA2387A /* MockRouteLocationProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2627B77B9D3A860FAA7898F7 /* MockRouteLocationProvider.swift */; };
+		D0B96531D19553E4AA1E70B2 /* RouteInterpolatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 76B89D2B25CC9D9BFFDF0E24 /* RouteInterpolatorTests.swift */; };
+		D80B5436F99A393853349638 /* TelemetryScenario.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21A638142EB2BB177FD27642 /* TelemetryScenario.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		0533850B155BF11067DD131E /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AF5C2DC2D94FF6EC553EBA0A /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E995F06FB39B438ECA2CAD59;
+			remoteInfo = TelemetryLocationKit_iOS;
+		};
+		1C81288FFD16DB5E4DF3D432 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AF5C2DC2D94FF6EC553EBA0A /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 99C290D79F1641B8D00A20F9;
+			remoteInfo = TelemetryLocationKit_macOS;
+		};
+		D530E69230FD278E0A6FC92F /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AF5C2DC2D94FF6EC553EBA0A /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 99C290D79F1641B8D00A20F9;
+			remoteInfo = TelemetryLocationKit_macOS;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		25292A28CE6735D14D1BE9BC /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				2EE95CF08E10EA1F0278507E /* TelemetryLocationKit.framework in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		66E235C16FC90ECDA32E1543 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				736CE9108D2595EFA655CB4B /* TelemetryLocationKit.framework in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C9FF8899408B089E4D962514 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				2EA9BE06FA166F378B3865CE /* TelemetryLocationKit.framework in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		15D0899DF6B52DCC1B521E62 /* ScenarioCodecTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScenarioCodecTests.swift; sourceTree = "<group>"; };
+		207FFA0685FCBEEC77EEA6E3 /* TelemetryQAConsoleApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelemetryQAConsoleApp.swift; sourceTree = "<group>"; };
+		21A638142EB2BB177FD27642 /* TelemetryScenario.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelemetryScenario.swift; sourceTree = "<group>"; };
+		245AA6F7DDCC1B350A63EE5E /* NetworkDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkDiagnostics.swift; sourceTree = "<group>"; };
+		2627B77B9D3A860FAA7898F7 /* MockRouteLocationProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockRouteLocationProvider.swift; sourceTree = "<group>"; };
+		276B74AFFAA802B407B76855 /* ScenarioCodec.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScenarioCodec.swift; sourceTree = "<group>"; };
+		5AC2A6ABB7D03C3C6487DEA0 /* TelemetryLocationKitTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TelemetryLocationKitTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		5C5ADA99DB4CC7A7AEB631BC /* TelemetryScenarioStudioApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelemetryScenarioStudioApp.swift; sourceTree = "<group>"; };
+		74D59FCD0C2157CBF1F3A55A /* TelemetryQAConsole.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = TelemetryQAConsole.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		76B89D2B25CC9D9BFFDF0E24 /* RouteInterpolatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RouteInterpolatorTests.swift; sourceTree = "<group>"; };
+		7B7C0EAA8FDC432A0B5E8379 /* VPNService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VPNService.swift; sourceTree = "<group>"; };
+		883DC623A0AF250DA4AFC3CF /* CoreLocationProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreLocationProvider.swift; sourceTree = "<group>"; };
+		8BC769CA94F56567D6852084 /* RouteInterpolator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RouteInterpolator.swift; sourceTree = "<group>"; };
+		AEA79EFA8372ABB01A04FFD9 /* DeveloperDeviceService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeveloperDeviceService.swift; sourceTree = "<group>"; };
+		C7C55E24893419178B6070CA /* TelemetryLocationKit.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = TelemetryLocationKit.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		CF863E5ED2CA8E90A86CDC08 /* TelemetryScenarioStudio.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TelemetryScenarioStudio.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		E109D871339F012AFA3471DE /* GPXExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GPXExporter.swift; sourceTree = "<group>"; };
+		E257145B8948E2C3B17E14FD /* ScenarioTemplates.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScenarioTemplates.swift; sourceTree = "<group>"; };
+		EE26FCC0DD59DC54040C2C02 /* LocationProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationProvider.swift; sourceTree = "<group>"; };
+		FD56AF0512601E25C84760C8 /* TelemetryLocationKit.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = TelemetryLocationKit.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		FD879BDABF72FB82C01E6140 /* XcodeDebugSessionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = XcodeDebugSessionService.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		4B425604AB1228EC2D4BE732 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				66B4E913D881BFFBC9109974 /* TelemetryLocationKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		68BE980D63CEC5F59A85BFE2 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				1E18C6A7CF314F6DE8D60C09 /* TelemetryLocationKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B11412B1ED86AD5D328F76C1 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				CACE0D85EA896B9169A13065 /* TelemetryLocationKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		2D94429CB3019ED7D9889CF0 /* TelemetryLocationKit */ = {
+			isa = PBXGroup;
+			children = (
+				883DC623A0AF250DA4AFC3CF /* CoreLocationProvider.swift */,
+				E109D871339F012AFA3471DE /* GPXExporter.swift */,
+				EE26FCC0DD59DC54040C2C02 /* LocationProvider.swift */,
+				2627B77B9D3A860FAA7898F7 /* MockRouteLocationProvider.swift */,
+				245AA6F7DDCC1B350A63EE5E /* NetworkDiagnostics.swift */,
+				8BC769CA94F56567D6852084 /* RouteInterpolator.swift */,
+				276B74AFFAA802B407B76855 /* ScenarioCodec.swift */,
+				E257145B8948E2C3B17E14FD /* ScenarioTemplates.swift */,
+				21A638142EB2BB177FD27642 /* TelemetryScenario.swift */,
+				7B7C0EAA8FDC432A0B5E8379 /* VPNService.swift */,
+			);
+			name = TelemetryLocationKit;
+			path = Sources/TelemetryLocationKit;
+			sourceTree = "<group>";
+		};
+		71AA3D6872E69D2BD028C409 /* TelemetryScenarioStudio */ = {
+			isa = PBXGroup;
+			children = (
+				AEA79EFA8372ABB01A04FFD9 /* DeveloperDeviceService.swift */,
+				5C5ADA99DB4CC7A7AEB631BC /* TelemetryScenarioStudioApp.swift */,
+				FD879BDABF72FB82C01E6140 /* XcodeDebugSessionService.swift */,
+			);
+			name = TelemetryScenarioStudio;
+			path = Sources/TelemetryScenarioStudio;
+			sourceTree = "<group>";
+		};
+		A2ABEC2B0C9EF6EE7FFBE66F /* TelemetryLocationKitTests */ = {
+			isa = PBXGroup;
+			children = (
+				76B89D2B25CC9D9BFFDF0E24 /* RouteInterpolatorTests.swift */,
+				15D0899DF6B52DCC1B521E62 /* ScenarioCodecTests.swift */,
+			);
+			name = TelemetryLocationKitTests;
+			path = Tests/TelemetryLocationKitTests;
+			sourceTree = "<group>";
+		};
+		B3A8495CF91125006E094348 /* TelemetryQAConsole */ = {
+			isa = PBXGroup;
+			children = (
+				207FFA0685FCBEEC77EEA6E3 /* TelemetryQAConsoleApp.swift */,
+			);
+			name = TelemetryQAConsole;
+			path = Sources/TelemetryQAConsole;
+			sourceTree = "<group>";
+		};
+		D13AC2C1815190AA7FE11C8D /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				C7C55E24893419178B6070CA /* TelemetryLocationKit.framework */,
+				FD56AF0512601E25C84760C8 /* TelemetryLocationKit.framework */,
+				5AC2A6ABB7D03C3C6487DEA0 /* TelemetryLocationKitTests.xctest */,
+				74D59FCD0C2157CBF1F3A55A /* TelemetryQAConsole.app */,
+				CF863E5ED2CA8E90A86CDC08 /* TelemetryScenarioStudio.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		ED12357B07AA3E31EDF58BD4 = {
+			isa = PBXGroup;
+			children = (
+				2D94429CB3019ED7D9889CF0 /* TelemetryLocationKit */,
+				A2ABEC2B0C9EF6EE7FFBE66F /* TelemetryLocationKitTests */,
+				B3A8495CF91125006E094348 /* TelemetryQAConsole */,
+				71AA3D6872E69D2BD028C409 /* TelemetryScenarioStudio */,
+				D13AC2C1815190AA7FE11C8D /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		718B8DDD425AF6F794504F0F /* TelemetryScenarioStudio */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 2E400620E62371382DC08625 /* Build configuration list for PBXNativeTarget "TelemetryScenarioStudio" */;
+			buildPhases = (
+				59EF2E452B2C2715803E549E /* Sources */,
+				B11412B1ED86AD5D328F76C1 /* Frameworks */,
+				25292A28CE6735D14D1BE9BC /* Embed Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				D324B89F5765BCAE6940E76A /* PBXTargetDependency */,
+			);
+			name = TelemetryScenarioStudio;
+			packageProductDependencies = (
+			);
+			productName = TelemetryScenarioStudio;
+			productReference = CF863E5ED2CA8E90A86CDC08 /* TelemetryScenarioStudio.app */;
+			productType = "com.apple.product-type.application";
+		};
+		99C290D79F1641B8D00A20F9 /* TelemetryLocationKit_macOS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 0559AA6AB5D29691229C72D0 /* Build configuration list for PBXNativeTarget "TelemetryLocationKit_macOS" */;
+			buildPhases = (
+				B443F391A91DEC2BA155EA38 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = TelemetryLocationKit_macOS;
+			packageProductDependencies = (
+			);
+			productName = TelemetryLocationKit_macOS;
+			productReference = FD56AF0512601E25C84760C8 /* TelemetryLocationKit.framework */;
+			productType = "com.apple.product-type.framework";
+		};
+		B4FC51ABB58915FF396E55A2 /* TelemetryQAConsole */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 00B64D4DB43F0C7E0FFA7A24 /* Build configuration list for PBXNativeTarget "TelemetryQAConsole" */;
+			buildPhases = (
+				18935EED58C07366E0A2BC90 /* Sources */,
+				4B425604AB1228EC2D4BE732 /* Frameworks */,
+				66E235C16FC90ECDA32E1543 /* Embed Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				26CC28A1C14AAD4A7701A732 /* PBXTargetDependency */,
+			);
+			name = TelemetryQAConsole;
+			packageProductDependencies = (
+			);
+			productName = TelemetryQAConsole;
+			productReference = 74D59FCD0C2157CBF1F3A55A /* TelemetryQAConsole.app */;
+			productType = "com.apple.product-type.application";
+		};
+		E38C5CAD2FAA3DC6975C52E8 /* TelemetryLocationKitTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 133E1FE11F7CC40D40A751CD /* Build configuration list for PBXNativeTarget "TelemetryLocationKitTests" */;
+			buildPhases = (
+				5D1A7CE9545EE58413E36E5E /* Sources */,
+				68BE980D63CEC5F59A85BFE2 /* Frameworks */,
+				C9FF8899408B089E4D962514 /* Embed Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				640A1834007E907BDD0F9B05 /* PBXTargetDependency */,
+			);
+			name = TelemetryLocationKitTests;
+			packageProductDependencies = (
+			);
+			productName = TelemetryLocationKitTests;
+			productReference = 5AC2A6ABB7D03C3C6487DEA0 /* TelemetryLocationKitTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		E995F06FB39B438ECA2CAD59 /* TelemetryLocationKit_iOS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 0C5C1AD198FA90AB75A6BEFA /* Build configuration list for PBXNativeTarget "TelemetryLocationKit_iOS" */;
+			buildPhases = (
+				6361468A22C583F35ADAB3A4 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = TelemetryLocationKit_iOS;
+			packageProductDependencies = (
+			);
+			productName = TelemetryLocationKit_iOS;
+			productReference = C7C55E24893419178B6070CA /* TelemetryLocationKit.framework */;
+			productType = "com.apple.product-type.framework";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		AF5C2DC2D94FF6EC553EBA0A /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					718B8DDD425AF6F794504F0F = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Automatic;
+					};
+					99C290D79F1641B8D00A20F9 = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Automatic;
+					};
+					B4FC51ABB58915FF396E55A2 = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Automatic;
+					};
+					E38C5CAD2FAA3DC6975C52E8 = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Automatic;
+					};
+					E995F06FB39B438ECA2CAD59 = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = 1C1FECA6F47B517787A5F627 /* Build configuration list for PBXProject "EnterpriseTelemetryLocationQA" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = ED12357B07AA3E31EDF58BD4;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = D13AC2C1815190AA7FE11C8D /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				E38C5CAD2FAA3DC6975C52E8 /* TelemetryLocationKitTests */,
+				E995F06FB39B438ECA2CAD59 /* TelemetryLocationKit_iOS */,
+				99C290D79F1641B8D00A20F9 /* TelemetryLocationKit_macOS */,
+				B4FC51ABB58915FF396E55A2 /* TelemetryQAConsole */,
+				718B8DDD425AF6F794504F0F /* TelemetryScenarioStudio */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		18935EED58C07366E0A2BC90 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				638DACBF6A75088232A3E9E0 /* TelemetryQAConsoleApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		59EF2E452B2C2715803E549E /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5A83820BCDD2206BCE210D26 /* DeveloperDeviceService.swift in Sources */,
+				C5E8A96C2A23195B2F21F8C7 /* TelemetryScenarioStudioApp.swift in Sources */,
+				325BC6D3BB567A2ACDE59FFF /* XcodeDebugSessionService.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		5D1A7CE9545EE58413E36E5E /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D0B96531D19553E4AA1E70B2 /* RouteInterpolatorTests.swift in Sources */,
+				92D2A9171C3D1B2E2C11BF4D /* ScenarioCodecTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		6361468A22C583F35ADAB3A4 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				36F6588D9436084D19A7815A /* CoreLocationProvider.swift in Sources */,
+				69FFBC1D74AB84C54D85E23F /* GPXExporter.swift in Sources */,
+				7C66E48FA2DA23266332C911 /* LocationProvider.swift in Sources */,
+				3857CA885CCAE00D4D1F5C8E /* MockRouteLocationProvider.swift in Sources */,
+				C2F46E3E8C2C0969BABB7CC7 /* NetworkDiagnostics.swift in Sources */,
+				AD0940E93A5EE4784C91D928 /* RouteInterpolator.swift in Sources */,
+				559ECD2D4954FFB39E599CA7 /* ScenarioCodec.swift in Sources */,
+				CC5CAE90FE93C12094CA4435 /* ScenarioTemplates.swift in Sources */,
+				1CD0D89438166C0E498B8DF9 /* TelemetryScenario.swift in Sources */,
+				6540CC62E5207BCC7FF889D1 /* VPNService.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B443F391A91DEC2BA155EA38 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				33A37880FF3011E4C4B10211 /* CoreLocationProvider.swift in Sources */,
+				1826CE4EC8B03B902801F389 /* GPXExporter.swift in Sources */,
+				6D115F63FD865BDDB7BCD62B /* LocationProvider.swift in Sources */,
+				CD355E8B9CB887CB0BA2387A /* MockRouteLocationProvider.swift in Sources */,
+				AA7B544BA1B0B3181BEFF965 /* NetworkDiagnostics.swift in Sources */,
+				452FEF8A749A523B2FD94DA6 /* RouteInterpolator.swift in Sources */,
+				561DB034CC513BB394C1B1E7 /* ScenarioCodec.swift in Sources */,
+				77226E8D2B546EB2F0F4CED5 /* ScenarioTemplates.swift in Sources */,
+				D80B5436F99A393853349638 /* TelemetryScenario.swift in Sources */,
+				79E4A2ABA8942050E385FDF4 /* VPNService.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		26CC28A1C14AAD4A7701A732 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E995F06FB39B438ECA2CAD59 /* TelemetryLocationKit_iOS */;
+			targetProxy = 0533850B155BF11067DD131E /* PBXContainerItemProxy */;
+		};
+		640A1834007E907BDD0F9B05 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 99C290D79F1641B8D00A20F9 /* TelemetryLocationKit_macOS */;
+			targetProxy = D530E69230FD278E0A6FC92F /* PBXContainerItemProxy */;
+		};
+		D324B89F5765BCAE6940E76A /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 99C290D79F1641B8D00A20F9 /* TelemetryLocationKit_macOS */;
+			targetProxy = 1C81288FFD16DB5E4DF3D432 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		14B235B67D3817386D487BDB /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.enterprise.telemetryqa.locationkit.tests;
+				PRODUCT_MODULE_NAME = TelemetryLocationKitTests;
+				SDKROOT = macosx;
+			};
+			name = Debug;
+		};
+		17CEA430248217BA0A2452B1 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = "";
+				CODE_SIGN_ENTITLEMENTS = Config/TelemetryScenarioStudio.entitlements;
+				COMBINE_HIDPI_IMAGES = YES;
+				INFOPLIST_FILE = "Generated/TelemetryScenarioStudio-Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.enterprise.telemetryqa.studio;
+				SDKROOT = macosx;
+			};
+			name = Release;
+		};
+		1D70DE826C890FC4DBBD30D5 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "";
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEFINES_MODULE = YES;
+				DYLIB_COMPATIBILITY_VERSION = 1;
+				DYLIB_CURRENT_VERSION = 1;
+				DYLIB_INSTALL_NAME_BASE = "@rpath";
+				INFOPLIST_FILE = "Generated/TelemetryLocationKit-macOS-Info.plist";
+				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.enterprise.telemetryqa.locationkit.macos;
+				PRODUCT_MODULE_NAME = TelemetryLocationKit;
+				PRODUCT_NAME = TelemetryLocationKit;
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				VERSIONING_SYSTEM = "apple-generic";
+			};
+			name = Release;
+		};
+		6678A92D8DD598297747A0B2 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = "";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		821F5D53D4FB89248E05E4AF /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = "";
+				CODE_SIGN_ENTITLEMENTS = Config/TelemetryQAConsole.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				INFOPLIST_FILE = "Generated/TelemetryQAConsole-Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.enterprise.telemetryqa.console;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		8C56FE8B23C15C74192C825A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "";
+				CURRENT_PROJECT_VERSION = 1;
+				DEFINES_MODULE = YES;
+				DYLIB_COMPATIBILITY_VERSION = 1;
+				DYLIB_CURRENT_VERSION = 1;
+				DYLIB_INSTALL_NAME_BASE = "@rpath";
+				INFOPLIST_FILE = "Generated/TelemetryLocationKit-iOS-Info.plist";
+				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.enterprise.telemetryqa.locationkit.ios;
+				PRODUCT_MODULE_NAME = TelemetryLocationKit;
+				PRODUCT_NAME = TelemetryLocationKit;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VERSIONING_SYSTEM = "apple-generic";
+			};
+			name = Release;
+		};
+		8E8C8DFC5B7D91F2BE3F1011 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		A60870B79325C10DC3C26DB7 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = "";
+				CODE_SIGN_ENTITLEMENTS = Config/TelemetryQAConsole.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				INFOPLIST_FILE = "Generated/TelemetryQAConsole-Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.enterprise.telemetryqa.console;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		BA39CF869C72FB04D9E92F47 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "";
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEFINES_MODULE = YES;
+				DYLIB_COMPATIBILITY_VERSION = 1;
+				DYLIB_CURRENT_VERSION = 1;
+				DYLIB_INSTALL_NAME_BASE = "@rpath";
+				INFOPLIST_FILE = "Generated/TelemetryLocationKit-macOS-Info.plist";
+				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.enterprise.telemetryqa.locationkit.macos;
+				PRODUCT_MODULE_NAME = TelemetryLocationKit;
+				PRODUCT_NAME = TelemetryLocationKit;
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				VERSIONING_SYSTEM = "apple-generic";
+			};
+			name = Debug;
+		};
+		CEE180C06E039503AC79B0AF /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "";
+				CURRENT_PROJECT_VERSION = 1;
+				DEFINES_MODULE = YES;
+				DYLIB_COMPATIBILITY_VERSION = 1;
+				DYLIB_CURRENT_VERSION = 1;
+				DYLIB_INSTALL_NAME_BASE = "@rpath";
+				INFOPLIST_FILE = "Generated/TelemetryLocationKit-iOS-Info.plist";
+				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.enterprise.telemetryqa.locationkit.ios;
+				PRODUCT_MODULE_NAME = TelemetryLocationKit;
+				PRODUCT_NAME = TelemetryLocationKit;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VERSIONING_SYSTEM = "apple-generic";
+			};
+			name = Debug;
+		};
+		DBEFDBC3EB81A235E0D2003C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = "";
+				CODE_SIGN_ENTITLEMENTS = Config/TelemetryScenarioStudio.entitlements;
+				COMBINE_HIDPI_IMAGES = YES;
+				INFOPLIST_FILE = "Generated/TelemetryScenarioStudio-Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.enterprise.telemetryqa.studio;
+				SDKROOT = macosx;
+			};
+			name = Debug;
+		};
+		E0F6DB6132B40C5148D76445 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.enterprise.telemetryqa.locationkit.tests;
+				PRODUCT_MODULE_NAME = TelemetryLocationKitTests;
+				SDKROOT = macosx;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		00B64D4DB43F0C7E0FFA7A24 /* Build configuration list for PBXNativeTarget "TelemetryQAConsole" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A60870B79325C10DC3C26DB7 /* Debug */,
+				821F5D53D4FB89248E05E4AF /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		0559AA6AB5D29691229C72D0 /* Build configuration list for PBXNativeTarget "TelemetryLocationKit_macOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BA39CF869C72FB04D9E92F47 /* Debug */,
+				1D70DE826C890FC4DBBD30D5 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		0C5C1AD198FA90AB75A6BEFA /* Build configuration list for PBXNativeTarget "TelemetryLocationKit_iOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				CEE180C06E039503AC79B0AF /* Debug */,
+				8C56FE8B23C15C74192C825A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		133E1FE11F7CC40D40A751CD /* Build configuration list for PBXNativeTarget "TelemetryLocationKitTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				14B235B67D3817386D487BDB /* Debug */,
+				E0F6DB6132B40C5148D76445 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		1C1FECA6F47B517787A5F627 /* Build configuration list for PBXProject "EnterpriseTelemetryLocationQA" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				8E8C8DFC5B7D91F2BE3F1011 /* Debug */,
+				6678A92D8DD598297747A0B2 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		2E400620E62371382DC08625 /* Build configuration list for PBXNativeTarget "TelemetryScenarioStudio" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				DBEFDBC3EB81A235E0D2003C /* Debug */,
+				17CEA430248217BA0A2452B1 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = AF5C2DC2D94FF6EC553EBA0A /* Project object */;
+}

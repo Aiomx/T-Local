@@ -1,0 +1,10 @@
+.build/
+build/
+DerivedData/
+.venv*/
+*.xcuserstate
+xcuserdata/
+*.moved-aside
+*.ipa
+*.dSYM.zip
+*.dSYM
