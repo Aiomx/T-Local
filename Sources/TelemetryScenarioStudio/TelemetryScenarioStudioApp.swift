@@ -24,11 +24,24 @@ final class ScenarioStudioStore {
     var selectedModule: StudioModule = .scenarios
     var sidebarSelection: StudioSidebarSelection?
     var developerDevices: [DeveloperDevice] = []
-    var selectedDeveloperDeviceID: String?
+    var selectedDeveloperDeviceID: String? {
+        didSet {
+            if oldValue != selectedDeveloperDeviceID {
+                stopRoutePlayback(resetToIdle: true)
+            }
+        }
+    }
     var developerDeviceStatus: String?
     var isRefreshingDeveloperDevices = false
     var locationLatitudeText = "31.2304"
     var locationLongitudeText = "121.4737"
+    var routePlaybackState: RoutePlaybackState = .idle
+    var routePlaybackSpeed: Double = 1
+    var routePlaybackLoops = false
+    var deviceLocationStatus = DeviceLocationStatusSnapshot()
+    var recentLocations: [SavedMapLocation] = []
+    var favoriteLocations: [SavedMapLocation] = []
+    var presetLocationGroups = LocationPresetGroup.defaults
     var xcodeWorkspacePath: String
     var xcodeWorkspaceName: String
     var xcodeSchemeName = ""
@@ -49,6 +62,9 @@ final class ScenarioStudioStore {
     }
 
     private static let languageDefaultsKey = "TelemetryScenarioStudio.language"
+    private static let recentLocationsDefaultsKey = "TelemetryScenarioStudio.recentLocations"
+    private static let favoriteLocationsDefaultsKey = "TelemetryScenarioStudio.favoriteLocations"
+    @ObservationIgnored private var routePlaybackTask: Task<Void, Never>?
     private let developerDeviceService = DeveloperDeviceService()
     private let xcodeDebugSessionService = XcodeDebugSessionService()
 
@@ -57,6 +73,9 @@ final class ScenarioStudioStore {
             scenarios.first { $0.id == selectedScenarioID } ?? scenarios[0]
         }
         set {
+            if selectedScenarioID != nil, selectedScenarioID != newValue.id {
+                stopRoutePlayback(resetToIdle: true)
+            }
             if let index = scenarios.firstIndex(where: { $0.id == newValue.id }) {
                 scenarios[index] = newValue
             }
@@ -75,6 +94,8 @@ final class ScenarioStudioStore {
         selectedScenarioID = scenarios.first?.id
         sidebarSelection = scenarios.first.map { .scenario($0.id) }
         selectedPointID = scenarios.first?.route.first?.id
+        recentLocations = Self.loadLocations(forKey: Self.recentLocationsDefaultsKey)
+        favoriteLocations = Self.loadLocations(forKey: Self.favoriteLocationsDefaultsKey)
     }
 
     func addPoint() {
@@ -289,8 +310,17 @@ final class ScenarioStudioStore {
 
         do {
             try await developerDeviceService.setLocation(device: selectedDevice, latitude: latitude, longitude: longitude)
+            recordAppliedLocation(
+                device: selectedDevice,
+                coordinate: CLLocationCoordinate2D(latitude: latitude, longitude: longitude),
+                source: .manual,
+                scenario: nil,
+                pointIndex: nil,
+                totalPoints: nil
+            )
             developerDeviceStatus = text("developer_devices_location_set")
         } catch {
+            routePlaybackState = .failed
             developerDeviceStatus = error.localizedDescription
         }
     }
@@ -303,6 +333,21 @@ final class ScenarioStudioStore {
 
         do {
             try await developerDeviceService.clearLocation(device: selectedDevice)
+            stopRoutePlayback(resetToIdle: true)
+            deviceLocationStatus = DeviceLocationStatusSnapshot(
+                playbackState: .idle,
+                source: .cleared,
+                deviceName: selectedDevice.name,
+                deviceID: selectedDevice.id,
+                scenarioName: nil,
+                scenarioID: nil,
+                coordinate: nil,
+                appliedAt: Date(),
+                pointIndex: nil,
+                totalPoints: nil,
+                playbackSpeed: routePlaybackSpeed,
+                loops: routePlaybackLoops
+            )
             developerDeviceStatus = text("developer_devices_location_cleared")
         } catch {
             developerDeviceStatus = error.localizedDescription
@@ -320,6 +365,16 @@ final class ScenarioStudioStore {
             return
         }
         updateManualDeviceLocation(point.coordinate)
+        if let selectedDevice {
+            recordAppliedLocation(
+                device: selectedDevice,
+                coordinate: point.coordinate,
+                source: .scenarioStart,
+                scenario: selectedScenario,
+                pointIndex: 0,
+                totalPoints: selectedScenario.route.count
+            )
+        }
     }
 
     var manualDeviceLocationCoordinate: CLLocationCoordinate2D? {
@@ -395,6 +450,14 @@ final class ScenarioStudioStore {
                 latitude: point.latitude,
                 longitude: point.longitude
             )
+            recordAppliedLocation(
+                device: selectedDevice,
+                coordinate: point.coordinate,
+                source: .scenarioStart,
+                scenario: selectedScenario,
+                pointIndex: 0,
+                totalPoints: selectedScenario.route.count
+            )
             xcodeDebugStatus = String(
                 format: text("xcode_debug_started"),
                 selectedDevice.name,
@@ -409,6 +472,219 @@ final class ScenarioStudioStore {
     var xcodeDebugSummary: String {
         let device = selectedDevice?.name ?? text("automatic")
         return String(format: text("xcode_auto_summary"), device, selectedScenario.name)
+    }
+
+    func startRoutePlayback() {
+        guard let selectedDevice else {
+            developerDeviceStatus = text("developer_devices_select_first")
+            return
+        }
+        guard selectedDevice.locationCapability.isAvailable else {
+            developerDeviceStatus = text("playback_device_unavailable")
+            routePlaybackState = .failed
+            return
+        }
+        let scenario = selectedScenario
+        guard !scenario.route.isEmpty else {
+            developerDeviceStatus = text("playback_route_empty")
+            routePlaybackState = .failed
+            return
+        }
+
+        stopRoutePlayback(resetToIdle: false)
+        routePlaybackState = .running
+        deviceLocationStatus = DeviceLocationStatusSnapshot(
+            playbackState: .running,
+            source: .scenarioPlayback,
+            deviceName: selectedDevice.name,
+            deviceID: selectedDevice.id,
+            scenarioName: scenario.name,
+            scenarioID: scenario.id,
+            coordinate: nil,
+            appliedAt: nil,
+            pointIndex: 0,
+            totalPoints: scenario.route.count,
+            playbackSpeed: routePlaybackSpeed,
+            loops: routePlaybackLoops
+        )
+
+        let speed = max(routePlaybackSpeed, 0.1)
+        let shouldLoop = routePlaybackLoops
+        routePlaybackTask = Task { [weak self] in
+            await self?.runRoutePlayback(device: selectedDevice, scenario: scenario, speed: speed, loops: shouldLoop)
+        }
+    }
+
+    func pauseRoutePlayback() {
+        guard routePlaybackState == .running else {
+            return
+        }
+        routePlaybackState = .paused
+        deviceLocationStatus.playbackState = .paused
+        developerDeviceStatus = text("playback_paused")
+    }
+
+    func resumeRoutePlayback() {
+        guard routePlaybackState == .paused else {
+            return
+        }
+        routePlaybackState = .running
+        deviceLocationStatus.playbackState = .running
+        developerDeviceStatus = text("playback_resumed")
+    }
+
+    func stopRoutePlayback(resetToIdle: Bool = true) {
+        routePlaybackTask?.cancel()
+        routePlaybackTask = nil
+        if resetToIdle {
+            routePlaybackState = .idle
+            deviceLocationStatus.playbackState = .idle
+        }
+    }
+
+    private func runRoutePlayback(
+        device: DeveloperDevice,
+        scenario: TelemetryScenario,
+        speed: Double,
+        loops: Bool
+    ) async {
+        repeat {
+            for index in scenario.route.indices {
+                if Task.isCancelled {
+                    return
+                }
+
+                while routePlaybackState == .paused, !Task.isCancelled {
+                    try? await Task.sleep(for: .milliseconds(200))
+                }
+                if Task.isCancelled {
+                    return
+                }
+
+                if index > 0 {
+                    let previous = scenario.route[index - 1]
+                    let current = scenario.route[index]
+                    let delay = max(0, current.elapsedSeconds - previous.elapsedSeconds) / speed
+                    if delay > 0 {
+                        try? await Task.sleep(for: .seconds(delay))
+                    }
+                }
+
+                while routePlaybackState == .paused, !Task.isCancelled {
+                    try? await Task.sleep(for: .milliseconds(200))
+                }
+                if Task.isCancelled {
+                    return
+                }
+
+                let point = scenario.route[index]
+                do {
+                    try await developerDeviceService.setLocation(
+                        device: device,
+                        latitude: point.latitude,
+                        longitude: point.longitude
+                    )
+                    routePlaybackState = .running
+                    recordAppliedLocation(
+                        device: device,
+                        coordinate: point.coordinate,
+                        source: .scenarioPlayback,
+                        scenario: scenario,
+                        pointIndex: index,
+                        totalPoints: scenario.route.count
+                    )
+                    developerDeviceStatus = String(
+                        format: text("playback_applied_point"),
+                        index + 1,
+                        scenario.route.count,
+                        device.name
+                    )
+                } catch {
+                    routePlaybackState = .failed
+                    deviceLocationStatus.playbackState = .failed
+                    developerDeviceStatus = error.localizedDescription
+                    routePlaybackTask = nil
+                    return
+                }
+            }
+        } while loops && !Task.isCancelled
+
+        routePlaybackState = .completed
+        deviceLocationStatus.playbackState = .completed
+        routePlaybackTask = nil
+        developerDeviceStatus = text("playback_completed")
+    }
+
+    private func recordAppliedLocation(
+        device: DeveloperDevice,
+        coordinate: CLLocationCoordinate2D,
+        source: DeviceLocationSource,
+        scenario: TelemetryScenario?,
+        pointIndex: Int?,
+        totalPoints: Int?
+    ) {
+        deviceLocationStatus = DeviceLocationStatusSnapshot(
+            playbackState: routePlaybackState,
+            source: source,
+            deviceName: device.name,
+            deviceID: device.id,
+            scenarioName: scenario?.name,
+            scenarioID: scenario?.id,
+            coordinate: coordinate,
+            appliedAt: Date(),
+            pointIndex: pointIndex,
+            totalPoints: totalPoints,
+            playbackSpeed: routePlaybackSpeed,
+            loops: routePlaybackLoops
+        )
+    }
+
+    func addRecentLocation(_ location: SavedMapLocation) {
+        var values = recentLocations.filter { !$0.matches(location) }
+        values.insert(location, at: 0)
+        recentLocations = Array(values.prefix(10))
+        Self.saveLocations(recentLocations, forKey: Self.recentLocationsDefaultsKey)
+    }
+
+    func addFavoriteLocation(_ location: SavedMapLocation) {
+        guard !favoriteLocations.contains(where: { $0.matches(location) }) else {
+            return
+        }
+        favoriteLocations.insert(location, at: 0)
+        Self.saveLocations(favoriteLocations, forKey: Self.favoriteLocationsDefaultsKey)
+    }
+
+    func removeFavoriteLocation(_ location: SavedMapLocation) {
+        favoriteLocations.removeAll { $0.id == location.id || $0.matches(location) }
+        Self.saveLocations(favoriteLocations, forKey: Self.favoriteLocationsDefaultsKey)
+    }
+
+    func favoriteLocationForCurrentCoordinate() {
+        guard let coordinate = manualDeviceLocationCoordinate else {
+            developerDeviceStatus = text("developer_devices_invalid_coordinate")
+            return
+        }
+        addFavoriteLocation(
+            SavedMapLocation(
+                title: String(format: text("custom_coordinate_title"), coordinate.latitude, coordinate.longitude),
+                subtitle: text("favorite_location"),
+                latitude: coordinate.latitude,
+                longitude: coordinate.longitude
+            )
+        )
+        developerDeviceStatus = text("favorite_added")
+    }
+
+    private static func loadLocations(forKey key: String) -> [SavedMapLocation] {
+        guard let data = UserDefaults.standard.data(forKey: key) else {
+            return []
+        }
+        return (try? JSONDecoder().decode([SavedMapLocation].self, from: data)) ?? []
+    }
+
+    private static func saveLocations(_ locations: [SavedMapLocation], forKey key: String) {
+        let data = try? JSONEncoder().encode(locations)
+        UserDefaults.standard.set(data, forKey: key)
     }
 
     var selectedDevice: DeveloperDevice? {
@@ -528,6 +804,53 @@ enum StudioLocalizations {
         "xcode_debug_started": "Set %@ location to %.6f, %.6f.",
         "xcode_physical_note": "For now this applies the first point of the scenario. Continuous route playback can be implemented by pushing each route point on a timer through the same device service.",
         "xcode_auto_summary": "Device: %@\nScenario: %@",
+        "current_location_status": "Current Location Status",
+        "target_device": "Target Device",
+        "location_source": "Source",
+        "status_time": "Applied At",
+        "scenario": "Scenario",
+        "route_progress": "Route Progress",
+        "playback_options": "Playback",
+        "playback_state_idle": "Idle",
+        "playback_state_running": "Running",
+        "playback_state_paused": "Paused",
+        "playback_state_completed": "Completed",
+        "playback_state_failed": "Failed",
+        "location_source_none": "None",
+        "location_source_manual": "Manual",
+        "location_source_scenarioStart": "Scenario Start",
+        "location_source_scenarioPlayback": "Scenario Playback",
+        "location_source_cleared": "Cleared",
+        "route_playback": "Route Playback",
+        "route_playback_summary": "%@ · %d route points",
+        "playback_speed": "Speed",
+        "loop_playback": "Loop",
+        "loop_on": "Loop on",
+        "loop_off": "Loop off",
+        "play_route": "Play Route",
+        "pause_route": "Pause",
+        "resume_route": "Resume",
+        "stop_route": "Stop",
+        "playback_device_unavailable": "The selected device cannot receive simulated locations.",
+        "playback_route_empty": "The selected scenario has no route points.",
+        "playback_paused": "Route playback paused.",
+        "playback_resumed": "Route playback resumed.",
+        "playback_completed": "Route playback completed.",
+        "playback_applied_point": "Applied point %d of %d to %@.",
+        "search_pane_results": "Results",
+        "search_pane_recent": "Recent",
+        "search_pane_favorites": "Favorites",
+        "search_pane_presets": "Presets",
+        "recent_locations_empty": "No recent locations.",
+        "favorite_locations_empty": "No favorite locations.",
+        "add_favorite": "Add Favorite",
+        "remove_favorite": "Remove Favorite",
+        "favorite_location": "Favorite location",
+        "favorite_added": "Favorite location added.",
+        "custom_coordinate_title": "%.6f, %.6f",
+        "preset_cities": "Cities",
+        "preset_airports": "Airports",
+        "preset_boundaries": "Boundaries",
         "automatic": "Automatic",
         "developer_devices_found": "Found %d developer devices.",
         "developer_devices_select_first": "Select a device first.",
@@ -611,6 +934,53 @@ enum StudioLocalizations {
         "xcode_debug_started": "已将 %@ 定位设置为 %.6f, %.6f。",
         "xcode_physical_note": "当前先应用场景第一个路线点。连续路线回放可以继续用同一个设备服务按定时器逐点推送。",
         "xcode_auto_summary": "设备：%@\n场景：%@",
+        "current_location_status": "当前位置状态",
+        "target_device": "目标设备",
+        "location_source": "来源",
+        "status_time": "应用时间",
+        "scenario": "场景",
+        "route_progress": "路线进度",
+        "playback_options": "回放",
+        "playback_state_idle": "空闲",
+        "playback_state_running": "运行中",
+        "playback_state_paused": "已暂停",
+        "playback_state_completed": "已完成",
+        "playback_state_failed": "失败",
+        "location_source_none": "无",
+        "location_source_manual": "手动",
+        "location_source_scenarioStart": "场景起点",
+        "location_source_scenarioPlayback": "场景回放",
+        "location_source_cleared": "已清除",
+        "route_playback": "路线回放",
+        "route_playback_summary": "%@ · %d 个路线点",
+        "playback_speed": "倍速",
+        "loop_playback": "循环",
+        "loop_on": "循环开",
+        "loop_off": "循环关",
+        "play_route": "播放路线",
+        "pause_route": "暂停",
+        "resume_route": "继续",
+        "stop_route": "停止",
+        "playback_device_unavailable": "选中的设备无法接收模拟定位。",
+        "playback_route_empty": "选中的场景没有路线点。",
+        "playback_paused": "路线回放已暂停。",
+        "playback_resumed": "路线回放已继续。",
+        "playback_completed": "路线回放已完成。",
+        "playback_applied_point": "已将第 %d / %d 个点应用到 %@。",
+        "search_pane_results": "结果",
+        "search_pane_recent": "最近",
+        "search_pane_favorites": "收藏",
+        "search_pane_presets": "预设",
+        "recent_locations_empty": "暂无最近位置。",
+        "favorite_locations_empty": "暂无收藏位置。",
+        "add_favorite": "添加收藏",
+        "remove_favorite": "移除收藏",
+        "favorite_location": "收藏位置",
+        "favorite_added": "已添加收藏位置。",
+        "custom_coordinate_title": "%.6f, %.6f",
+        "preset_cities": "常用城市",
+        "preset_airports": "机场",
+        "preset_boundaries": "边界/跨区点",
         "automatic": "自动",
         "developer_devices_found": "发现 %d 台开发设备。",
         "developer_devices_select_first": "请先选择设备。",
@@ -681,6 +1051,146 @@ struct LocationSearchResult: Identifiable, Hashable {
 
     func hash(into hasher: inout Hasher) {
         hasher.combine(id)
+    }
+}
+
+enum RoutePlaybackState: String, CaseIterable, Identifiable {
+    case idle
+    case running
+    case paused
+    case completed
+    case failed
+
+    var id: String { rawValue }
+
+    @MainActor
+    func title(in store: ScenarioStudioStore) -> String {
+        store.text("playback_state_\(rawValue)")
+    }
+}
+
+enum DeviceLocationSource: String {
+    case none
+    case manual
+    case scenarioStart
+    case scenarioPlayback
+    case cleared
+
+    @MainActor
+    func title(in store: ScenarioStudioStore) -> String {
+        store.text("location_source_\(rawValue)")
+    }
+}
+
+struct DeviceLocationStatusSnapshot {
+    var playbackState: RoutePlaybackState = .idle
+    var source: DeviceLocationSource = .none
+    var deviceName: String?
+    var deviceID: String?
+    var scenarioName: String?
+    var scenarioID: String?
+    var coordinate: CLLocationCoordinate2D?
+    var appliedAt: Date?
+    var pointIndex: Int?
+    var totalPoints: Int?
+    var playbackSpeed: Double = 1
+    var loops = false
+}
+
+struct SavedMapLocation: Identifiable, Codable, Hashable {
+    var id: String
+    var title: String
+    var subtitle: String
+    var latitude: Double
+    var longitude: Double
+
+    init(
+        id: String = UUID().uuidString,
+        title: String,
+        subtitle: String,
+        latitude: Double,
+        longitude: Double
+    ) {
+        self.id = id
+        self.title = title
+        self.subtitle = subtitle
+        self.latitude = latitude
+        self.longitude = longitude
+    }
+
+    init(searchResult: LocationSearchResult) {
+        self.init(
+            title: searchResult.title,
+            subtitle: searchResult.subtitle,
+            latitude: searchResult.coordinate.latitude,
+            longitude: searchResult.coordinate.longitude
+        )
+    }
+
+    var coordinate: CLLocationCoordinate2D {
+        CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+    }
+
+    func matches(_ other: SavedMapLocation) -> Bool {
+        title.caseInsensitiveCompare(other.title) == .orderedSame &&
+            abs(latitude - other.latitude) < 0.000001 &&
+            abs(longitude - other.longitude) < 0.000001
+    }
+}
+
+struct LocationPresetGroup: Identifiable, Hashable {
+    var id: String
+    var titleKey: String
+    var locations: [SavedMapLocation]
+
+    static let defaults: [LocationPresetGroup] = [
+        LocationPresetGroup(
+            id: "cities",
+            titleKey: "preset_cities",
+            locations: [
+                SavedMapLocation(title: "Shanghai", subtitle: "China", latitude: 31.2304, longitude: 121.4737),
+                SavedMapLocation(title: "Beijing", subtitle: "China", latitude: 39.9042, longitude: 116.4074),
+                SavedMapLocation(title: "Tokyo", subtitle: "Japan", latitude: 35.6762, longitude: 139.6503),
+                SavedMapLocation(title: "New York", subtitle: "United States", latitude: 40.7128, longitude: -74.0060),
+                SavedMapLocation(title: "London", subtitle: "United Kingdom", latitude: 51.5072, longitude: -0.1276),
+                SavedMapLocation(title: "Singapore", subtitle: "Singapore", latitude: 1.3521, longitude: 103.8198),
+                SavedMapLocation(title: "Hong Kong", subtitle: "China", latitude: 22.3193, longitude: 114.1694),
+                SavedMapLocation(title: "Los Angeles", subtitle: "United States", latitude: 34.0522, longitude: -118.2437)
+            ]
+        ),
+        LocationPresetGroup(
+            id: "airports",
+            titleKey: "preset_airports",
+            locations: [
+                SavedMapLocation(title: "JFK", subtitle: "New York John F. Kennedy International Airport", latitude: 40.6413, longitude: -73.7781),
+                SavedMapLocation(title: "LAX", subtitle: "Los Angeles International Airport", latitude: 33.9416, longitude: -118.4085),
+                SavedMapLocation(title: "PVG", subtitle: "Shanghai Pudong International Airport", latitude: 31.1443, longitude: 121.8083),
+                SavedMapLocation(title: "PEK", subtitle: "Beijing Capital International Airport", latitude: 40.0799, longitude: 116.6031)
+            ]
+        ),
+        LocationPresetGroup(
+            id: "boundaries",
+            titleKey: "preset_boundaries",
+            locations: [
+                SavedMapLocation(title: "Shenzhen / Hong Kong", subtitle: "Boundary crossing QA point", latitude: 22.5319, longitude: 114.1131),
+                SavedMapLocation(title: "Macau / Zhuhai", subtitle: "Boundary crossing QA point", latitude: 22.1987, longitude: 113.5439),
+                SavedMapLocation(title: "San Diego / Tijuana", subtitle: "US/MX boundary QA point", latitude: 32.5445, longitude: -117.0308)
+            ]
+        )
+    ]
+}
+
+enum LocationSearchPane: String, CaseIterable, Identifiable {
+    case results
+    case recent
+    case favorites
+    case presets
+
+    var id: String { rawValue }
+
+    @MainActor
+    func title(in store: ScenarioStudioStore) -> String {
+        store.text("search_pane_\(rawValue)")
     }
 }
 
@@ -902,6 +1412,7 @@ struct DeveloperDevicesView: View {
                     .frame(maxWidth: 820, alignment: .leading)
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
 
+                DeviceLocationStatusPanel(store: store)
                 DeviceListPanel(store: store)
                 DeviceLocationControlPanel(store: store)
                 XcodeDebugSessionPanel(store: store)
@@ -972,6 +1483,107 @@ struct DeviceListPanel: View {
     }
 }
 
+struct DeviceLocationStatusPanel: View {
+    @Bindable var store: ScenarioStudioStore
+
+    var body: some View {
+        let status = store.deviceLocationStatus
+
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Label(store.text("current_location_status"), systemImage: "location.circle")
+                    .font(.title3.bold())
+                Spacer()
+                Text(status.playbackState.title(in: store))
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(statusColor(status.playbackState))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(statusColor(status.playbackState).opacity(0.14), in: Capsule())
+            }
+
+            Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 8) {
+                GridRow {
+                    statusCell(store.text("target_device"), status.deviceName ?? store.selectedDevice?.name ?? "-")
+                    statusCell(store.text("location_source"), status.source.title(in: store))
+                    statusCell(store.text("status_time"), formattedDate(status.appliedAt))
+                }
+                GridRow {
+                    statusCell(store.text("scenario"), status.scenarioName ?? store.selectedScenario.name)
+                    statusCell(store.text("route_progress"), progressText(status))
+                    statusCell(store.text("playback_options"), optionsText(status))
+                }
+                GridRow {
+                    statusCell(store.text("latitude"), coordinateText(status.coordinate?.latitude))
+                    statusCell(store.text("longitude"), coordinateText(status.coordinate?.longitude))
+                    statusCell("ID", status.deviceID ?? "-")
+                }
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(.separator, lineWidth: 1)
+        )
+    }
+
+    private func statusCell(_ title: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.system(.callout, design: .monospaced))
+                .textSelection(.enabled)
+                .lineLimit(1)
+        }
+        .frame(minWidth: 150, alignment: .leading)
+    }
+
+    private func coordinateText(_ value: Double?) -> String {
+        guard let value else {
+            return "-"
+        }
+        return String(format: "%.6f", value)
+    }
+
+    private func formattedDate(_ date: Date?) -> String {
+        guard let date else {
+            return "-"
+        }
+        return date.formatted(date: .omitted, time: .standard)
+    }
+
+    private func progressText(_ status: DeviceLocationStatusSnapshot) -> String {
+        guard let pointIndex = status.pointIndex, let totalPoints = status.totalPoints else {
+            return "-"
+        }
+        return "\(pointIndex + 1) / \(totalPoints)"
+    }
+
+    private func optionsText(_ status: DeviceLocationStatusSnapshot) -> String {
+        let loop = status.loops ? store.text("loop_on") : store.text("loop_off")
+        return String(format: "%.1fx · %@", status.playbackSpeed, loop)
+    }
+
+    private func statusColor(_ state: RoutePlaybackState) -> Color {
+        switch state {
+        case .idle:
+            .secondary
+        case .running:
+            .green
+        case .paused:
+            .orange
+        case .completed:
+            .blue
+        case .failed:
+            .red
+        }
+    }
+}
+
 struct DeviceLocationControlPanel: View {
     @Bindable var store: ScenarioStudioStore
 
@@ -1012,6 +1624,7 @@ struct DeviceLocationControlPanel: View {
                 }
 
                 DeviceLocationMapPicker(store: store)
+                RoutePlaybackControlPanel(store: store, selectedDevice: selectedDevice)
             } else {
                 Text(store.text("developer_devices_select_first"))
                     .foregroundStyle(.secondary)
@@ -1052,6 +1665,7 @@ struct DeviceLocationMapPicker: View {
     @State private var searchResults: [LocationSearchResult] = []
     @State private var isSearching = false
     @State private var searchError: String?
+    @State private var selectedSearchPane: LocationSearchPane = .results
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1070,6 +1684,10 @@ struct DeviceLocationMapPicker: View {
                 }
                 Button(store.text("center_map")) {
                     centerOnCurrentCoordinate()
+                }
+                .disabled(store.manualDeviceLocationCoordinate == nil)
+                Button(store.text("add_favorite")) {
+                    store.favoriteLocationForCurrentCoordinate()
                 }
                 .disabled(store.manualDeviceLocationCoordinate == nil)
             }
@@ -1093,52 +1711,15 @@ struct DeviceLocationMapPicker: View {
                     .foregroundStyle(.secondary)
             }
 
-            if !searchResults.isEmpty {
-                VStack(spacing: 0) {
-                    ForEach(searchResults) { result in
-                        Button {
-                            selectSearchResult(result)
-                        } label: {
-                            HStack(alignment: .top, spacing: 10) {
-                                Image(systemName: "mappin.circle")
-                                    .foregroundStyle(.orange)
-                                    .frame(width: 18)
-
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(result.title)
-                                        .font(.callout.weight(.semibold))
-                                        .lineLimit(1)
-                                    if !result.subtitle.isEmpty {
-                                        Text(result.subtitle)
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                            .lineLimit(1)
-                                    }
-                                }
-
-                                Spacer()
-
-                                Text("\(result.coordinate.latitude, format: .number.precision(.fractionLength(4))), \(result.coordinate.longitude, format: .number.precision(.fractionLength(4)))")
-                                    .font(.caption.monospacedDigit())
-                                    .foregroundStyle(.secondary)
-                            }
-                            .padding(.vertical, 8)
-                            .padding(.horizontal, 10)
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-
-                        if result.id != searchResults.last?.id {
-                            Divider()
-                        }
-                    }
+            Picker(store.text("location_search"), selection: $selectedSearchPane) {
+                ForEach(LocationSearchPane.allCases) { pane in
+                    Text(pane.title(in: store)).tag(pane)
                 }
-                .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(.separator, lineWidth: 1)
-                )
             }
+            .pickerStyle(.segmented)
+
+            locationList
+                .frame(maxHeight: 230)
 
             MapReader { proxy in
                 Map(position: $position) {
@@ -1178,6 +1759,154 @@ struct DeviceLocationMapPicker: View {
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private var locationList: some View {
+        switch selectedSearchPane {
+        case .results:
+            savedLocationList(
+                locations: searchResults.map(SavedMapLocation.init(searchResult:)),
+                emptyText: store.text("location_search_no_results"),
+                showsFavoriteActions: true
+            )
+        case .recent:
+            savedLocationList(
+                locations: store.recentLocations,
+                emptyText: store.text("recent_locations_empty"),
+                showsFavoriteActions: true
+            )
+        case .favorites:
+            savedLocationList(
+                locations: store.favoriteLocations,
+                emptyText: store.text("favorite_locations_empty"),
+                showsFavoriteActions: false,
+                showsRemoveFavorite: true
+            )
+        case .presets:
+            presetLocationList
+        }
+    }
+
+    private func savedLocationList(
+        locations: [SavedMapLocation],
+        emptyText: String,
+        showsFavoriteActions: Bool,
+        showsRemoveFavorite: Bool = false
+    ) -> some View {
+        ScrollView {
+            if locations.isEmpty {
+                Text(emptyText)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(locations) { location in
+                        locationRow(
+                            location,
+                            showsFavoriteAction: showsFavoriteActions,
+                            showsRemoveFavorite: showsRemoveFavorite
+                        )
+
+                        if location.id != locations.last?.id {
+                            Divider()
+                        }
+                    }
+                }
+            }
+        }
+        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(.separator, lineWidth: 1)
+        )
+    }
+
+    private var presetLocationList: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                ForEach(store.presetLocationGroups) { group in
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(store.text(group.titleKey))
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 10)
+                            .padding(.top, 8)
+
+                        ForEach(group.locations) { location in
+                            locationRow(location, showsFavoriteAction: true)
+                        }
+                    }
+                }
+            }
+        }
+        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(.separator, lineWidth: 1)
+        )
+    }
+
+    private func locationRow(
+        _ location: SavedMapLocation,
+        showsFavoriteAction: Bool,
+        showsRemoveFavorite: Bool = false
+    ) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Button {
+                selectSavedLocation(location)
+            } label: {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: "mappin.circle")
+                        .foregroundStyle(.orange)
+                        .frame(width: 18)
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(location.title)
+                            .font(.callout.weight(.semibold))
+                            .lineLimit(1)
+                        if !location.subtitle.isEmpty {
+                            Text(location.subtitle)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+
+                    Spacer()
+
+                    Text("\(location.latitude, format: .number.precision(.fractionLength(4))), \(location.longitude, format: .number.precision(.fractionLength(4)))")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if showsFavoriteAction {
+                Button {
+                    store.addFavoriteLocation(location)
+                } label: {
+                    Image(systemName: "star")
+                }
+                .buttonStyle(.borderless)
+                .help(store.text("add_favorite"))
+            }
+
+            if showsRemoveFavorite {
+                Button {
+                    store.removeFavoriteLocation(location)
+                } label: {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.borderless)
+                .help(store.text("remove_favorite"))
+            }
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 10)
     }
 
     private func centerOnCurrentCoordinate() {
@@ -1234,6 +1963,7 @@ struct DeviceLocationMapPicker: View {
             if searchResults.isEmpty {
                 searchError = store.text("location_search_no_results")
             }
+            selectedSearchPane = .results
         } catch {
             searchError = error.localizedDescription
             searchResults = []
@@ -1242,15 +1972,75 @@ struct DeviceLocationMapPicker: View {
         isSearching = false
     }
 
-    private func selectSearchResult(_ result: LocationSearchResult) {
-        store.updateManualDeviceLocation(result.coordinate)
-        searchText = result.title
-        searchResults = []
+    private func selectSavedLocation(_ location: SavedMapLocation) {
+        store.updateManualDeviceLocation(location.coordinate)
+        store.addRecentLocation(location)
+        searchText = location.title
         position = .region(
             MKCoordinateRegion(
-                center: result.coordinate,
+                center: location.coordinate,
                 span: MKCoordinateSpan(latitudeDelta: 0.03, longitudeDelta: 0.03)
             )
+        )
+    }
+}
+
+struct RoutePlaybackControlPanel: View {
+    @Bindable var store: ScenarioStudioStore
+    var selectedDevice: DeveloperDevice
+
+    private let speeds: [Double] = [0.5, 1, 2, 5]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .center, spacing: 12) {
+                Label(store.text("route_playback"), systemImage: "play.circle")
+                    .font(.headline)
+                Spacer()
+                Picker(store.text("playback_speed"), selection: $store.routePlaybackSpeed) {
+                    ForEach(speeds, id: \.self) { speed in
+                        Text(String(format: "%.1fx", speed)).tag(speed)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 240)
+
+                Toggle(store.text("loop_playback"), isOn: $store.routePlaybackLoops)
+                    .toggleStyle(.switch)
+            }
+
+            Text(String(format: store.text("route_playback_summary"), store.selectedScenario.name, store.selectedScenario.route.count))
+                .font(.callout)
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 8) {
+                Button(store.text("play_route")) {
+                    store.startRoutePlayback()
+                }
+                .disabled(!selectedDevice.locationCapability.isAvailable || store.selectedScenario.route.isEmpty || store.routePlaybackState == .running)
+
+                Button(store.text("pause_route")) {
+                    store.pauseRoutePlayback()
+                }
+                .disabled(store.routePlaybackState != .running)
+
+                Button(store.text("resume_route")) {
+                    store.resumeRoutePlayback()
+                }
+                .disabled(store.routePlaybackState != .paused)
+
+                Button(store.text("stop_route")) {
+                    store.stopRoutePlayback()
+                }
+                .disabled(store.routePlaybackState == .idle)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(.separator, lineWidth: 1)
         )
     }
 }
