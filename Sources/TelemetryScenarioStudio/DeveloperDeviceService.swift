@@ -37,6 +37,31 @@ struct DeveloperDevice: Identifiable, Hashable {
     var locationCapability: LocationCapability
 }
 
+struct DeviceHealthCheck: Equatable {
+    var deviceID: String
+    var checkedAt: Date
+    var items: [DeviceHealthItem]
+
+    var hasBlockingFailure: Bool {
+        items.contains { $0.status == .fail }
+    }
+}
+
+struct DeviceHealthItem: Identifiable, Equatable {
+    enum Status: String {
+        case pass
+        case warn
+        case fail
+        case unknown
+    }
+
+    var id: String
+    var title: String
+    var status: Status
+    var detail: String
+    var recommendation: String
+}
+
 struct DeveloperDeviceService {
     func listDevices() async throws -> [DeveloperDevice] {
         async let attachedUDIDsTask = listAttachedDeviceUDIDs()
@@ -67,6 +92,41 @@ struct DeveloperDeviceService {
         case let .unavailable(reason):
             throw DeveloperDeviceError.locationUnavailable(reason)
         }
+    }
+
+    func runHealthCheck(device: DeveloperDevice) async -> DeviceHealthCheck {
+        var items: [DeviceHealthItem] = []
+
+        items.append(
+            DeviceHealthItem(
+                id: "pairing",
+                title: "Pairing and trust",
+                status: device.pairingState == "paired" || device.kind == .simulator ? .pass : .fail,
+                detail: device.kind == .simulator ? "Simulator does not require pairing." : "Pairing state: \(device.pairingState ?? "unknown").",
+                recommendation: device.pairingState == "paired" || device.kind == .simulator ? "No action required." : "Unlock the iPhone, tap Trust, enable Developer Mode, then refresh devices."
+            )
+        )
+
+        items.append(
+            DeviceHealthItem(
+                id: "connection",
+                title: "Connection path",
+                status: device.isAvailable ? .pass : .warn,
+                detail: device.connectionSummary,
+                recommendation: device.isAvailable ? "No action required." : "Reconnect USB/Wi-Fi, keep the device unlocked, then refresh the device list."
+            )
+        )
+
+        switch device.kind {
+        case .simulator:
+            items.append(simulatorHealthItem(device: device))
+        case .physical:
+            items.append(contentsOf: await physicalHealthItems(device: device))
+        }
+
+        items.append(locationCapabilityHealthItem(device: device))
+
+        return DeviceHealthCheck(deviceID: device.id, checkedAt: Date(), items: items)
     }
 
     func clearLocation(device: DeveloperDevice) async throws {
@@ -294,6 +354,144 @@ struct DeveloperDeviceService {
             }
         }
         return udids
+    }
+
+    private func simulatorHealthItem(device: DeveloperDevice) -> DeviceHealthItem {
+        DeviceHealthItem(
+            id: "simctl",
+            title: "simctl location",
+            status: device.isAvailable ? .pass : .fail,
+            detail: "Simulator state: \(device.tunnelState ?? "unknown").",
+            recommendation: device.isAvailable ? "simctl can set simulator location." : "Boot the simulator and refresh the device list."
+        )
+    }
+
+    private func physicalHealthItems(device: DeveloperDevice) async -> [DeviceHealthItem] {
+        var items: [DeviceHealthItem] = []
+        let details = (try? await coreDeviceDetails(device: device)) ?? ""
+        let lowercasedDetails = details.lowercased()
+
+        let developerModeVisible = lowercasedDetails.contains("developermode") || lowercasedDetails.contains("developer mode")
+        items.append(
+            DeviceHealthItem(
+                id: "developer-mode",
+                title: "Developer Mode visibility",
+                status: developerModeVisible ? .pass : .unknown,
+                detail: developerModeVisible ? "Developer Mode details are visible through devicectl." : "devicectl did not expose a Developer Mode field.",
+                recommendation: developerModeVisible ? "No action required." : "If location simulation fails, confirm Developer Mode is enabled on the iPhone."
+            )
+        )
+
+        let ddiVisible = lowercasedDetails.contains("developer disk image") || lowercasedDetails.contains("ddi") || lowercasedDetails.contains("diskimage")
+        items.append(
+            DeviceHealthItem(
+                id: "ddi",
+                title: "Developer Disk Image",
+                status: ddiVisible ? .pass : .unknown,
+                detail: ddiVisible ? "Developer Disk Image details were found in devicectl output." : "No DDI field was found in devicectl output.",
+                recommendation: ddiVisible ? "No action required." : "If DVT fails, open Xcode once or reconnect the device so CoreDevice can mount developer services."
+            )
+        )
+
+        if supportsDVTLocation(osVersion: device.osVersion) {
+            if let python = findPyMobileDevicePython() {
+                items.append(
+                    DeviceHealthItem(
+                        id: "pymobiledevice3",
+                        title: "pymobiledevice3 runtime",
+                        status: .pass,
+                        detail: python,
+                        recommendation: "No action required."
+                    )
+                )
+            } else {
+                items.append(
+                    DeviceHealthItem(
+                        id: "pymobiledevice3",
+                        title: "pymobiledevice3 runtime",
+                        status: .fail,
+                        detail: "No executable Python runtime with pymobiledevice3 support was found.",
+                        recommendation: "Restore .venv-pymobiledevice3/bin/python or install pymobiledevice3, then refresh."
+                    )
+                )
+            }
+
+            let tunnelIP = try? await currentTunnelIPAddress(device: device)
+            let rsdPort: Int?
+            if let udid = device.udid {
+                rsdPort = try? await latestRSDPort(udid: udid)
+            } else {
+                rsdPort = nil
+            }
+            items.append(
+                DeviceHealthItem(
+                    id: "coredevice-tunnel",
+                    title: "CoreDevice tunnel",
+                    status: tunnelIP == nil ? .fail : (rsdPort == nil ? .warn : .pass),
+                    detail: "Tunnel IP: \(tunnelIP ?? "missing"), RSD port: \(rsdPort.map(String.init) ?? "missing").",
+                    recommendation: tunnelIP == nil ? "Refresh devices, keep the iPhone unlocked, and retry." : (rsdPort == nil ? "Refresh the device list and retry location simulation to refresh remotepairingd logs." : "No action required.")
+                )
+            )
+        } else {
+            let hasIdeviceSetLocation = FileManager.default.isExecutableFile(atPath: "/opt/homebrew/bin/idevicesetlocation")
+            items.append(
+                DeviceHealthItem(
+                    id: "idevicesetlocation",
+                    title: "idevicesetlocation fallback",
+                    status: hasIdeviceSetLocation ? .pass : .warn,
+                    detail: hasIdeviceSetLocation ? "/opt/homebrew/bin/idevicesetlocation is available." : "idevicesetlocation is not installed.",
+                    recommendation: hasIdeviceSetLocation ? "No action required." : "Install libimobiledevice tools if this older iOS device needs location simulation."
+                )
+            )
+        }
+
+        return items
+    }
+
+    private func locationCapabilityHealthItem(device: DeveloperDevice) -> DeviceHealthItem {
+        switch device.locationCapability {
+        case .simctl:
+            return DeviceHealthItem(
+                id: "location-capability",
+                title: "Location simulation capability",
+                status: .pass,
+                detail: "Simulator location can be controlled with simctl.",
+                recommendation: "No action required."
+            )
+        case .dvtCoreDevice:
+            return DeviceHealthItem(
+                id: "location-capability",
+                title: "Location simulation capability",
+                status: .pass,
+                detail: "iOS 17+ CoreDevice DVT location simulation is available.",
+                recommendation: "No action required."
+            )
+        case .ideviceSetLocation:
+            return DeviceHealthItem(
+                id: "location-capability",
+                title: "Location simulation capability",
+                status: .pass,
+                detail: "libimobiledevice idevicesetlocation fallback is available.",
+                recommendation: "No action required."
+            )
+        case let .unavailable(reason):
+            return DeviceHealthItem(
+                id: "location-capability",
+                title: "Location simulation capability",
+                status: .fail,
+                detail: reason,
+                recommendation: "Resolve the failed checks above, then refresh devices."
+            )
+        }
+    }
+
+    private func coreDeviceDetails(device: DeveloperDevice) async throws -> String {
+        let data = try await runAndCapture(
+            "/usr/bin/xcrun",
+            arguments: ["devicectl", "device", "info", "details", "--device", device.id],
+            timeout: 12
+        )
+        return String(decoding: data, as: UTF8.self)
     }
 
     private func connectionSummary(hostname: String?, tunnelState: String?, isAttached: Bool) -> String {

@@ -28,6 +28,8 @@ final class ScenarioStudioStore {
         didSet {
             if oldValue != selectedDeveloperDeviceID {
                 stopRoutePlayback(resetToIdle: true)
+                stopGPXPlayback()
+                deviceHealthCheck = nil
             }
         }
     }
@@ -38,6 +40,18 @@ final class ScenarioStudioStore {
     var routePlaybackState: RoutePlaybackState = .idle
     var routePlaybackSpeed: Double = 1
     var routePlaybackLoops = false
+    var gpxPlaybackState = GPXPlaybackStatus()
+    var selectedTemplateKind: ParameterizedScenarioKind = .delivery
+    var templateStartLatitudeText = "31.2304"
+    var templateStartLongitudeText = "121.4737"
+    var templateEndLatitudeText = "31.2330"
+    var templateEndLongitudeText = "121.4802"
+    var templateSpeedText = "8"
+    var templateStartDwellText = "30"
+    var templateEndDwellText = "45"
+    var isGeneratingParameterizedTemplate = false
+    var deviceHealthCheck: DeviceHealthCheck?
+    var isRunningHealthCheck = false
     var deviceLocationStatus = DeviceLocationStatusSnapshot()
     var recentLocations: [SavedMapLocation] = []
     var favoriteLocations: [SavedMapLocation] = []
@@ -65,6 +79,7 @@ final class ScenarioStudioStore {
     private static let recentLocationsDefaultsKey = "TelemetryScenarioStudio.recentLocations"
     private static let favoriteLocationsDefaultsKey = "TelemetryScenarioStudio.favoriteLocations"
     @ObservationIgnored private var routePlaybackTask: Task<Void, Never>?
+    @ObservationIgnored private var gpxPlaybackTask: Task<Void, Never>?
     private let developerDeviceService = DeveloperDeviceService()
     private let xcodeDebugSessionService = XcodeDebugSessionService()
 
@@ -75,6 +90,7 @@ final class ScenarioStudioStore {
         set {
             if selectedScenarioID != nil, selectedScenarioID != newValue.id {
                 stopRoutePlayback(resetToIdle: true)
+                stopGPXPlayback()
             }
             if let index = scenarios.firstIndex(where: { $0.id == newValue.id }) {
                 scenarios[index] = newValue
@@ -201,6 +217,144 @@ final class ScenarioStudioStore {
         )
         selectedPointID = points.first?.id
         errorMessage = nil
+    }
+
+    func useCurrentLocationAsTemplateStart() {
+        guard let coordinate = manualDeviceLocationCoordinate else {
+            errorMessage = text("developer_devices_invalid_coordinate")
+            return
+        }
+        templateStartLatitudeText = String(format: "%.6f", coordinate.latitude)
+        templateStartLongitudeText = String(format: "%.6f", coordinate.longitude)
+    }
+
+    func useCurrentLocationAsTemplateEnd() {
+        guard let coordinate = manualDeviceLocationCoordinate else {
+            errorMessage = text("developer_devices_invalid_coordinate")
+            return
+        }
+        templateEndLatitudeText = String(format: "%.6f", coordinate.latitude)
+        templateEndLongitudeText = String(format: "%.6f", coordinate.longitude)
+    }
+
+    func generateParameterizedTemplate() async {
+        guard let start = templateStartCoordinate,
+              let end = templateEndCoordinate,
+              let speed = Double(templateSpeedText), speed > 0,
+              let startDwell = Double(templateStartDwellText), startDwell >= 0,
+              let endDwell = Double(templateEndDwellText), endDwell >= 0 else {
+            errorMessage = text("template_invalid_parameters")
+            return
+        }
+
+        isGeneratingParameterizedTemplate = true
+        errorMessage = nil
+
+        do {
+            let request = MKDirections.Request()
+            request.source = MKMapItem(placemark: MKPlacemark(coordinate: start))
+            request.destination = MKMapItem(placemark: MKPlacemark(coordinate: end))
+            request.transportType = selectedTemplateKind.transportType
+            let response = try await MKDirections(request: request).calculate()
+            guard let route = response.routes.first else {
+                throw ScenarioStudioError.noRouteFound
+            }
+
+            var coordinates = route.polyline.coordinates
+            if coordinates.isEmpty {
+                coordinates = [start, end]
+            }
+            if coordinates.first.map({ distance(from: $0, to: start) > 5 }) ?? true {
+                coordinates.insert(start, at: 0)
+            }
+            if coordinates.last.map({ distance(from: $0, to: end) > 5 }) ?? true {
+                coordinates.append(end)
+            }
+
+            let points = routePoints(
+                from: coordinates,
+                speed: speed,
+                startDwell: startDwell,
+                endDwell: endDwell,
+                kind: selectedTemplateKind
+            )
+            let existing = selectedScenario
+            selectedScenario = TelemetryScenario(
+                id: existing.id,
+                name: selectedTemplateKind.scenarioName(in: self),
+                description: selectedTemplateKind.scenarioDescription(in: self),
+                route: points,
+                networkProfile: existing.networkProfile,
+                expectedTelemetryTags: [
+                    "template": selectedTemplateKind.rawValue,
+                    "is_simulated": "true"
+                ]
+            )
+            selectedPointID = points.first?.id
+            plannedRoute = []
+            exportedGPX = ""
+            exportedJSON = ""
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+
+        isGeneratingParameterizedTemplate = false
+    }
+
+    private var templateStartCoordinate: CLLocationCoordinate2D? {
+        coordinate(latitudeText: templateStartLatitudeText, longitudeText: templateStartLongitudeText)
+    }
+
+    private var templateEndCoordinate: CLLocationCoordinate2D? {
+        coordinate(latitudeText: templateEndLatitudeText, longitudeText: templateEndLongitudeText)
+    }
+
+    private func coordinate(latitudeText: String, longitudeText: String) -> CLLocationCoordinate2D? {
+        guard let latitude = Double(latitudeText),
+              let longitude = Double(longitudeText) else {
+            return nil
+        }
+        let coordinate = CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+        return CLLocationCoordinate2DIsValid(coordinate) ? coordinate : nil
+    }
+
+    private func routePoints(
+        from coordinates: [CLLocationCoordinate2D],
+        speed: Double,
+        startDwell: TimeInterval,
+        endDwell: TimeInterval,
+        kind: ParameterizedScenarioKind
+    ) -> [RoutePoint] {
+        guard !coordinates.isEmpty else {
+            return []
+        }
+
+        var elapsed: TimeInterval = 0
+        var points: [RoutePoint] = []
+        for index in coordinates.indices {
+            if index > 0 {
+                elapsed += distance(from: coordinates[index - 1], to: coordinates[index]) / speed
+            }
+            points.append(
+                RoutePoint(
+                    latitude: coordinates[index].latitude,
+                    longitude: coordinates[index].longitude,
+                    speed: index == 0 || index == coordinates.count - 1 ? 0 : speed,
+                    elapsedSeconds: elapsed,
+                    dwellSeconds: index == 0 ? startDwell : (index == coordinates.count - 1 ? endDwell : 0),
+                    label: kind.pointLabel(index: index, total: coordinates.count, in: self)
+                )
+            )
+            if index == 0 {
+                elapsed += startDwell
+            }
+        }
+        return points
+    }
+
+    private func distance(from start: CLLocationCoordinate2D, to end: CLLocationCoordinate2D) -> CLLocationDistance {
+        CLLocation(latitude: start.latitude, longitude: start.longitude)
+            .distance(from: CLLocation(latitude: end.latitude, longitude: end.longitude))
     }
 
     private func directions(from start: RoutePoint, to end: RoutePoint) async throws -> MKRoute {
@@ -467,6 +621,116 @@ final class ScenarioStudioStore {
         } catch {
             xcodeDebugStatus = error.localizedDescription
         }
+    }
+
+    func refreshSelectedDeviceHealth() async {
+        guard let selectedDevice else {
+            developerDeviceStatus = text("developer_devices_select_first")
+            return
+        }
+        isRunningHealthCheck = true
+        deviceHealthCheck = await developerDeviceService.runHealthCheck(device: selectedDevice)
+        isRunningHealthCheck = false
+    }
+
+    func startGPXPlaybackToDevice() {
+        guard let selectedDevice else {
+            xcodeDebugStatus = text("developer_devices_select_first")
+            return
+        }
+        guard selectedDevice.locationCapability.isAvailable else {
+            xcodeDebugStatus = text("playback_device_unavailable")
+            gpxPlaybackState = GPXPlaybackStatus(state: .failed, message: text("playback_device_unavailable"))
+            return
+        }
+
+        do {
+            let gpx = try GPXExporter.export(selectedScenario)
+            let points = try GPXTrackPointParser.parse(gpx)
+            guard !points.isEmpty else {
+                throw ScenarioStudioError.emptyGPXTrack
+            }
+            stopGPXPlayback()
+            gpxPlaybackState = GPXPlaybackStatus(
+                state: .running,
+                deviceName: selectedDevice.name,
+                scenarioName: selectedScenario.name,
+                currentIndex: 0,
+                totalPoints: points.count,
+                lastCoordinate: nil,
+                message: text("gpx_playback_running")
+            )
+            gpxPlaybackTask = Task { [weak self] in
+                await self?.runGPXPlayback(device: selectedDevice, points: points)
+            }
+        } catch {
+            gpxPlaybackState = GPXPlaybackStatus(state: .failed, message: error.localizedDescription)
+            xcodeDebugStatus = error.localizedDescription
+        }
+    }
+
+    func stopGPXPlayback() {
+        gpxPlaybackTask?.cancel()
+        gpxPlaybackTask = nil
+        if gpxPlaybackState.state == .running {
+            gpxPlaybackState.state = .stopped
+            gpxPlaybackState.message = text("gpx_playback_stopped")
+        }
+    }
+
+    private func runGPXPlayback(device: DeveloperDevice, points: [GPXTrackPoint]) async {
+        for index in points.indices {
+            if Task.isCancelled {
+                return
+            }
+
+            if index > 0 {
+                let delay = max(0, points[index].timestamp.timeIntervalSince(points[index - 1].timestamp))
+                if delay > 0 {
+                    try? await Task.sleep(for: .seconds(delay))
+                }
+            }
+
+            if Task.isCancelled {
+                return
+            }
+
+            let point = points[index]
+            do {
+                try await developerDeviceService.setLocation(
+                    device: device,
+                    latitude: point.coordinate.latitude,
+                    longitude: point.coordinate.longitude
+                )
+                gpxPlaybackState = GPXPlaybackStatus(
+                    state: .running,
+                    deviceName: device.name,
+                    scenarioName: selectedScenario.name,
+                    currentIndex: index + 1,
+                    totalPoints: points.count,
+                    lastCoordinate: point.coordinate,
+                    message: String(format: text("gpx_playback_applied_point"), index + 1, points.count)
+                )
+                recordAppliedLocation(
+                    device: device,
+                    coordinate: point.coordinate,
+                    source: .gpxPlayback,
+                    scenario: selectedScenario,
+                    pointIndex: index,
+                    totalPoints: points.count
+                )
+            } catch {
+                gpxPlaybackState.state = .failed
+                gpxPlaybackState.message = error.localizedDescription
+                xcodeDebugStatus = error.localizedDescription
+                gpxPlaybackTask = nil
+                return
+            }
+        }
+
+        gpxPlaybackState.state = .completed
+        gpxPlaybackState.message = text("gpx_playback_completed")
+        gpxPlaybackTask = nil
     }
 
     var xcodeDebugSummary: String {
@@ -820,6 +1084,7 @@ enum StudioLocalizations {
         "location_source_manual": "Manual",
         "location_source_scenarioStart": "Scenario Start",
         "location_source_scenarioPlayback": "Scenario Playback",
+        "location_source_gpxPlayback": "GPX Playback",
         "location_source_cleared": "Cleared",
         "route_playback": "Route Playback",
         "route_playback_summary": "%@ · %d route points",
@@ -851,6 +1116,56 @@ enum StudioLocalizations {
         "preset_cities": "Cities",
         "preset_airports": "Airports",
         "preset_boundaries": "Boundaries",
+        "parameterized_templates": "Parameterized Templates",
+        "parameterized_templates_description": "Generate a QA scenario from start/end coordinates, speed, and dwell times.",
+        "template_type": "Template Type",
+        "template_kind_delivery": "Delivery",
+        "template_kind_crossCity": "Cross City",
+        "template_kind_fitness": "Fitness",
+        "template_kind_tunnelDrift": "Tunnel Drift",
+        "template_name_delivery": "Generated Delivery Route",
+        "template_name_crossCity": "Generated Cross City",
+        "template_name_fitness": "Generated Fitness Route",
+        "template_name_tunnelDrift": "Generated Tunnel Drift",
+        "template_description_delivery": "Parameterized pickup and drop-off telemetry scenario.",
+        "template_description_crossCity": "Parameterized long-distance city movement scenario.",
+        "template_description_fitness": "Parameterized walking/running telemetry scenario.",
+        "template_description_tunnelDrift": "Parameterized route with a low-signal tunnel marker.",
+        "template_delivery_stop": "Stop %d",
+        "template_cross_city_segment": "Segment %d",
+        "template_fitness_marker": "Marker %d",
+        "template_tunnel_low_signal": "Low Signal",
+        "template_start": "Start",
+        "template_end": "End",
+        "template_timing": "Timing",
+        "template_speed_mps": "Speed m/s",
+        "template_start_dwell": "Start dwell s",
+        "template_end_dwell": "End dwell s",
+        "use_current_picker": "Use Current",
+        "generate_template_route": "Generate Route",
+        "generating": "Generating...",
+        "template_invalid_parameters": "Enter valid start, end, speed, and dwell values.",
+        "play_gpx_to_device": "Play GPX To Device",
+        "stop_gpx_playback": "Stop GPX",
+        "gpx_playback_status": "GPX Playback Status",
+        "gpx_playback_running": "GPX playback is running.",
+        "gpx_playback_stopped": "GPX playback stopped.",
+        "gpx_playback_completed": "GPX playback completed.",
+        "gpx_playback_applied_point": "Applied GPX point %d of %d.",
+        "gpx_state_idle": "Idle",
+        "gpx_state_running": "Running",
+        "gpx_state_stopped": "Stopped",
+        "gpx_state_completed": "Completed",
+        "gpx_state_failed": "Failed",
+        "device_health_check": "Device Health Check",
+        "refresh_health_check": "Refresh Health Check",
+        "checking": "Checking...",
+        "health_check_empty": "Select a device and refresh to inspect pairing, tunnel, DDI, and runtime readiness.",
+        "health_checked_at": "Checked at %@",
+        "health_status_pass": "Pass",
+        "health_status_warn": "Warn",
+        "health_status_fail": "Fail",
+        "health_status_unknown": "Unknown",
         "automatic": "Automatic",
         "developer_devices_found": "Found %d developer devices.",
         "developer_devices_select_first": "Select a device first.",
@@ -950,6 +1265,7 @@ enum StudioLocalizations {
         "location_source_manual": "手动",
         "location_source_scenarioStart": "场景起点",
         "location_source_scenarioPlayback": "场景回放",
+        "location_source_gpxPlayback": "GPX 回放",
         "location_source_cleared": "已清除",
         "route_playback": "路线回放",
         "route_playback_summary": "%@ · %d 个路线点",
@@ -981,6 +1297,56 @@ enum StudioLocalizations {
         "preset_cities": "常用城市",
         "preset_airports": "机场",
         "preset_boundaries": "边界/跨区点",
+        "parameterized_templates": "参数化模板",
+        "parameterized_templates_description": "根据起终点、速度和停留时间生成 QA 场景路线。",
+        "template_type": "模板类型",
+        "template_kind_delivery": "外卖",
+        "template_kind_crossCity": "跨城",
+        "template_kind_fitness": "运动",
+        "template_kind_tunnelDrift": "隧道漂移",
+        "template_name_delivery": "生成的外卖路线",
+        "template_name_crossCity": "生成的跨城路线",
+        "template_name_fitness": "生成的运动路线",
+        "template_name_tunnelDrift": "生成的隧道漂移路线",
+        "template_description_delivery": "参数化取货和送达遥测场景。",
+        "template_description_crossCity": "参数化长距离城市移动场景。",
+        "template_description_fitness": "参数化步行/跑步遥测场景。",
+        "template_description_tunnelDrift": "带低信号隧道标记的参数化路线。",
+        "template_delivery_stop": "停靠点 %d",
+        "template_cross_city_segment": "路段 %d",
+        "template_fitness_marker": "标记 %d",
+        "template_tunnel_low_signal": "低信号",
+        "template_start": "起点",
+        "template_end": "终点",
+        "template_timing": "时间参数",
+        "template_speed_mps": "速度 m/s",
+        "template_start_dwell": "起点停留 s",
+        "template_end_dwell": "终点停留 s",
+        "use_current_picker": "使用当前",
+        "generate_template_route": "生成路线",
+        "generating": "生成中...",
+        "template_invalid_parameters": "请输入有效的起点、终点、速度和停留时间。",
+        "play_gpx_to_device": "回放 GPX 到设备",
+        "stop_gpx_playback": "停止 GPX",
+        "gpx_playback_status": "GPX 回放状态",
+        "gpx_playback_running": "GPX 回放运行中。",
+        "gpx_playback_stopped": "GPX 回放已停止。",
+        "gpx_playback_completed": "GPX 回放已完成。",
+        "gpx_playback_applied_point": "已应用第 %d / %d 个 GPX 点。",
+        "gpx_state_idle": "空闲",
+        "gpx_state_running": "运行中",
+        "gpx_state_stopped": "已停止",
+        "gpx_state_completed": "已完成",
+        "gpx_state_failed": "失败",
+        "device_health_check": "设备健康检查",
+        "refresh_health_check": "刷新健康检查",
+        "checking": "检查中...",
+        "health_check_empty": "选择设备并刷新，以检查配对、隧道、DDI 和运行时状态。",
+        "health_checked_at": "检查时间 %@",
+        "health_status_pass": "通过",
+        "health_status_warn": "警告",
+        "health_status_fail": "失败",
+        "health_status_unknown": "未知",
         "automatic": "自动",
         "developer_devices_found": "发现 %d 台开发设备。",
         "developer_devices_select_first": "请先选择设备。",
@@ -1074,6 +1440,7 @@ enum DeviceLocationSource: String {
     case manual
     case scenarioStart
     case scenarioPlayback
+    case gpxPlayback
     case cleared
 
     @MainActor
@@ -1194,13 +1561,171 @@ enum LocationSearchPane: String, CaseIterable, Identifiable {
     }
 }
 
+enum ParameterizedScenarioKind: String, CaseIterable, Identifiable {
+    case delivery
+    case crossCity
+    case fitness
+    case tunnelDrift
+
+    var id: String { rawValue }
+
+    var transportType: MKDirectionsTransportType {
+        switch self {
+        case .fitness:
+            .walking
+        case .delivery, .crossCity, .tunnelDrift:
+            .automobile
+        }
+    }
+
+    @MainActor
+    func title(in store: ScenarioStudioStore) -> String {
+        store.text("template_kind_\(rawValue)")
+    }
+
+    @MainActor
+    func scenarioName(in store: ScenarioStudioStore) -> String {
+        store.text("template_name_\(rawValue)")
+    }
+
+    @MainActor
+    func scenarioDescription(in store: ScenarioStudioStore) -> String {
+        store.text("template_description_\(rawValue)")
+    }
+
+    @MainActor
+    func pointLabel(index: Int, total: Int, in store: ScenarioStudioStore) -> String? {
+        if index == 0 {
+            return store.text("start")
+        }
+        if index == total - 1 {
+            return store.text("end")
+        }
+        switch self {
+        case .delivery:
+            return String(format: store.text("template_delivery_stop"), index)
+        case .crossCity:
+            return String(format: store.text("template_cross_city_segment"), index)
+        case .fitness:
+            return String(format: store.text("template_fitness_marker"), index)
+        case .tunnelDrift:
+            return index == total / 2 ? store.text("template_tunnel_low_signal") : nil
+        }
+    }
+}
+
+enum GPXPlaybackRunState: String {
+    case idle
+    case running
+    case stopped
+    case completed
+    case failed
+
+    @MainActor
+    func title(in store: ScenarioStudioStore) -> String {
+        store.text("gpx_state_\(rawValue)")
+    }
+}
+
+struct GPXPlaybackStatus {
+    var state: GPXPlaybackRunState = .idle
+    var deviceName: String?
+    var scenarioName: String?
+    var currentIndex: Int = 0
+    var totalPoints: Int = 0
+    var lastCoordinate: CLLocationCoordinate2D?
+    var message: String?
+}
+
+struct GPXTrackPoint {
+    var coordinate: CLLocationCoordinate2D
+    var timestamp: Date
+}
+
+final class GPXTrackPointParser: NSObject, XMLParserDelegate {
+    private var points: [GPXTrackPoint] = []
+    private var currentLatitude: Double?
+    private var currentLongitude: Double?
+    private var currentTimeText = ""
+    private var isReadingTime = false
+    private let dateFormatter = ISO8601DateFormatter()
+
+    static func parse(_ gpx: String) throws -> [GPXTrackPoint] {
+        let parserDelegate = GPXTrackPointParser()
+        let parser = XMLParser(data: Data(gpx.utf8))
+        parser.delegate = parserDelegate
+        guard parser.parse() else {
+            throw parser.parserError ?? ScenarioStudioError.invalidGPX
+        }
+        return parserDelegate.points
+    }
+
+    func parser(
+        _ parser: XMLParser,
+        didStartElement elementName: String,
+        namespaceURI: String?,
+        qualifiedName qName: String?,
+        attributes attributeDict: [String: String] = [:]
+    ) {
+        switch elementName {
+        case "trkpt":
+            currentLatitude = attributeDict["lat"].flatMap(Double.init)
+            currentLongitude = attributeDict["lon"].flatMap(Double.init)
+            currentTimeText = ""
+        case "time":
+            isReadingTime = currentLatitude != nil && currentLongitude != nil
+        default:
+            break
+        }
+    }
+
+    func parser(_ parser: XMLParser, foundCharacters string: String) {
+        if isReadingTime {
+            currentTimeText += string
+        }
+    }
+
+    func parser(
+        _ parser: XMLParser,
+        didEndElement elementName: String,
+        namespaceURI: String?,
+        qualifiedName qName: String?
+    ) {
+        switch elementName {
+        case "time":
+            isReadingTime = false
+        case "trkpt":
+            if let latitude = currentLatitude,
+               let longitude = currentLongitude,
+               let timestamp = dateFormatter.date(from: currentTimeText.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                let coordinate = CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+                if CLLocationCoordinate2DIsValid(coordinate) {
+                    points.append(GPXTrackPoint(coordinate: coordinate, timestamp: timestamp))
+                }
+            }
+            currentLatitude = nil
+            currentLongitude = nil
+            currentTimeText = ""
+            isReadingTime = false
+        default:
+            break
+        }
+    }
+}
+
 enum ScenarioStudioError: LocalizedError {
     case noRouteFound
+    case invalidGPX
+    case emptyGPXTrack
 
     var errorDescription: String? {
         switch self {
         case .noRouteFound:
             "MapKit did not return a route for the selected points."
+        case .invalidGPX:
+            "Unable to parse the generated GPX."
+        case .emptyGPXTrack:
+            "The generated GPX does not contain track points."
         }
     }
 }
@@ -1413,6 +1938,7 @@ struct DeveloperDevicesView: View {
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
 
                 DeviceLocationStatusPanel(store: store)
+                DeviceHealthCheckPanel(store: store)
                 DeviceListPanel(store: store)
                 DeviceLocationControlPanel(store: store)
                 XcodeDebugSessionPanel(store: store)
@@ -1581,6 +2107,102 @@ struct DeviceLocationStatusPanel: View {
         case .failed:
             .red
         }
+    }
+}
+
+struct DeviceHealthCheckPanel: View {
+    @Bindable var store: ScenarioStudioStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Label(store.text("device_health_check"), systemImage: "stethoscope")
+                    .font(.title3.bold())
+                Spacer()
+                Button(store.isRunningHealthCheck ? store.text("checking") : store.text("refresh_health_check")) {
+                    Task { await store.refreshSelectedDeviceHealth() }
+                }
+                .disabled(store.isRunningHealthCheck || store.selectedDevice == nil)
+            }
+
+            if let check = store.deviceHealthCheck {
+                Text(String(format: store.text("health_checked_at"), check.checkedAt.formatted(date: .omitted, time: .standard)))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                VStack(spacing: 8) {
+                    ForEach(check.items) { item in
+                        HStack(alignment: .top, spacing: 10) {
+                            Image(systemName: healthIcon(item.status))
+                                .foregroundStyle(healthColor(item.status))
+                                .frame(width: 18)
+
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack(spacing: 8) {
+                                    Text(item.title)
+                                        .font(.callout.weight(.semibold))
+                                    Text(healthTitle(item.status))
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(healthColor(item.status))
+                                }
+                                Text(item.detail)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .textSelection(.enabled)
+                                Text(item.recommendation)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            Spacer()
+                        }
+                        .padding(10)
+                        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
+                    }
+                }
+            } else {
+                Text(store.text("health_check_empty"))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(.separator, lineWidth: 1)
+        )
+    }
+
+    private func healthIcon(_ status: DeviceHealthItem.Status) -> String {
+        switch status {
+        case .pass:
+            "checkmark.circle.fill"
+        case .warn:
+            "exclamationmark.triangle.fill"
+        case .fail:
+            "xmark.octagon.fill"
+        case .unknown:
+            "questionmark.circle.fill"
+        }
+    }
+
+    private func healthColor(_ status: DeviceHealthItem.Status) -> Color {
+        switch status {
+        case .pass:
+            .green
+        case .warn:
+            .orange
+        case .fail:
+            .red
+        case .unknown:
+            .secondary
+        }
+    }
+
+    private func healthTitle(_ status: DeviceHealthItem.Status) -> String {
+        store.text("health_status_\(status.rawValue)")
     }
 }
 
@@ -2080,7 +2702,45 @@ struct XcodeDebugSessionPanel: View {
                 Button(store.text("start_debug_session")) {
                     Task { await store.launchXcodeDebugSession() }
                 }
+                Button(store.text("play_gpx_to_device")) {
+                    store.startGPXPlaybackToDevice()
+                }
+                .disabled(store.selectedDevice == nil || store.gpxPlaybackState.state == .running)
+                Button(store.text("stop_gpx_playback")) {
+                    store.stopGPXPlayback()
+                }
+                .disabled(store.gpxPlaybackState.state != .running)
             }
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text(store.text("gpx_playback_status"))
+                        .font(.headline)
+                    Spacer()
+                    Text(store.gpxPlaybackState.state.title(in: store))
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(gpxStateColor(store.gpxPlaybackState.state))
+                }
+
+                Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 6) {
+                    GridRow {
+                        gpxCell(store.text("target_device"), store.gpxPlaybackState.deviceName ?? store.selectedDevice?.name ?? "-")
+                        gpxCell(store.text("scenario"), store.gpxPlaybackState.scenarioName ?? store.selectedScenario.name)
+                        gpxCell(store.text("route_progress"), "\(store.gpxPlaybackState.currentIndex) / \(store.gpxPlaybackState.totalPoints)")
+                    }
+                    GridRow {
+                        gpxCell(store.text("latitude"), coordinateText(store.gpxPlaybackState.lastCoordinate?.latitude))
+                        gpxCell(store.text("longitude"), coordinateText(store.gpxPlaybackState.lastCoordinate?.longitude))
+                        gpxCell(store.text("status"), store.gpxPlaybackState.message ?? "-")
+                    }
+                }
+            }
+            .padding(12)
+            .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(.separator, lineWidth: 1)
+            )
 
             if let path = store.generatedDebugGPXPath {
                 LabeledContent(store.text("generated_gpx")) {
@@ -2108,6 +2768,41 @@ struct XcodeDebugSessionPanel: View {
             RoundedRectangle(cornerRadius: 10)
                 .stroke(.separator, lineWidth: 1)
         )
+    }
+
+    private func gpxCell(_ title: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.system(.caption, design: .monospaced))
+                .lineLimit(1)
+                .textSelection(.enabled)
+        }
+        .frame(minWidth: 150, alignment: .leading)
+    }
+
+    private func coordinateText(_ value: Double?) -> String {
+        guard let value else {
+            return "-"
+        }
+        return String(format: "%.6f", value)
+    }
+
+    private func gpxStateColor(_ state: GPXPlaybackRunState) -> Color {
+        switch state {
+        case .idle:
+            .secondary
+        case .running:
+            .green
+        case .stopped:
+            .orange
+        case .completed:
+            .blue
+        case .failed:
+            .red
+        }
     }
 }
 
@@ -2137,6 +2832,7 @@ struct ScenarioEditorView: View {
                         .foregroundStyle(.red)
                 }
 
+                ParameterizedTemplatePanel(store: store)
                 ScenarioMapPanel(store: store)
                 RoutePointTable(store: store)
                 ExportPanel(title: "GPX", text: store.exportedGPX)
@@ -2153,6 +2849,85 @@ struct ScenarioEditorView: View {
             }
             .padding(24)
         }
+    }
+}
+
+struct ParameterizedTemplatePanel: View {
+    @Bindable var store: ScenarioStudioStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Label(store.text("parameterized_templates"), systemImage: "wand.and.stars")
+                        .font(.headline)
+                    Text(store.text("parameterized_templates_description"))
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button(store.isGeneratingParameterizedTemplate ? store.text("generating") : store.text("generate_template_route")) {
+                    Task { await store.generateParameterizedTemplate() }
+                }
+                .disabled(store.isGeneratingParameterizedTemplate)
+            }
+
+            Picker(store.text("template_type"), selection: $store.selectedTemplateKind) {
+                ForEach(ParameterizedScenarioKind.allCases) { kind in
+                    Text(kind.title(in: store)).tag(kind)
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(maxWidth: 620)
+
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 10) {
+                GridRow {
+                    Text(store.text("template_start")).font(.caption).foregroundStyle(.secondary)
+                    TextField(store.text("latitude"), text: $store.templateStartLatitudeText)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 130)
+                    TextField(store.text("longitude"), text: $store.templateStartLongitudeText)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 130)
+                    Button(store.text("use_current_picker")) {
+                        store.useCurrentLocationAsTemplateStart()
+                    }
+                }
+
+                GridRow {
+                    Text(store.text("template_end")).font(.caption).foregroundStyle(.secondary)
+                    TextField(store.text("latitude"), text: $store.templateEndLatitudeText)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 130)
+                    TextField(store.text("longitude"), text: $store.templateEndLongitudeText)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 130)
+                    Button(store.text("use_current_picker")) {
+                        store.useCurrentLocationAsTemplateEnd()
+                    }
+                }
+
+                GridRow {
+                    Text(store.text("template_timing")).font(.caption).foregroundStyle(.secondary)
+                    TextField(store.text("template_speed_mps"), text: $store.templateSpeedText)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 130)
+                    TextField(store.text("template_start_dwell"), text: $store.templateStartDwellText)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 130)
+                    TextField(store.text("template_end_dwell"), text: $store.templateEndDwellText)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 130)
+                }
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(.separator, lineWidth: 1)
+        )
     }
 }
 
