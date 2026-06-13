@@ -2,6 +2,16 @@
 
 This guide builds and runs T-Local on macOS.
 
+## Tested Platforms
+
+T-Local is currently tested through:
+
+- macOS 27
+- iOS 27
+- iPadOS 27
+
+The macOS Scenario Studio is the primary desktop app. iOS and iPadOS coverage applies to trusted Apple developer devices, simulators, and the QA Console / SDK workflows that the project exposes.
+
 ## 1. Clone
 
 ```bash

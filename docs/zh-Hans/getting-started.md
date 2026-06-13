@@ -2,6 +2,16 @@
 
 本文说明如何在 macOS 上构建并运行 T-Local。
 
+## 已测试平台
+
+T-Local 当前已测试到：
+
+- macOS 27
+- iOS 27
+- iPadOS 27
+
+macOS Scenario Studio 是主要桌面端应用。iOS 和 iPadOS 覆盖范围适用于受信任 Apple 开发设备、模拟器，以及项目提供的 QA Console / SDK 工作流。
+
 ## 1. 克隆仓库
 
 ```bash

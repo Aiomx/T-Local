@@ -2,6 +2,8 @@
 
 The Developer Devices page lists simulators and trusted Apple developer devices visible to the Mac.
 
+Current device diagnostics and location simulation workflows have been tested through macOS 27 hosts and iOS 27 / iPadOS 27 target devices.
+
 ## Device Discovery
 
 T-Local checks:

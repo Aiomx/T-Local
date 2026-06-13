@@ -43,6 +43,16 @@ docs/zh-Hans/                   Simplified Chinese guides
 - Optional: Apple Developer Program account for iOS device deployment and VPN entitlements
 - Optional: `pymobiledevice3` runtime for advanced trusted-device DVT location workflows
 
+## Tested Platform Coverage
+
+The current development and QA coverage has been verified up to:
+
+- macOS 27
+- iOS 27
+- iPadOS 27
+
+Older Apple platforms may work when they support the required Xcode, Swift, MapKit, Core Location, and Network Extension APIs, but the actively tested compatibility range currently extends through the latest macOS 27, iOS 27, and iPadOS 27 releases available to the project.
+
 ## Quick Start
 
 ```bash
