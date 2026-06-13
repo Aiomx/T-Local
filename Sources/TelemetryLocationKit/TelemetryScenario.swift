@@ -46,6 +46,108 @@ public struct TelemetryScenario: Codable, Equatable, Identifiable, Sendable {
     public var duration: TimeInterval {
         route.last?.elapsedSeconds ?? 0
     }
+
+    public var routeMetrics: RouteMetrics {
+        RouteMetrics(route: route)
+    }
+
+    public var sortedTagPairs: [(key: String, value: String)] {
+        expectedTelemetryTags
+            .map { (key: $0.key, value: $0.value) }
+            .sorted { lhs, rhs in lhs.key.localizedCaseInsensitiveCompare(rhs.key) == .orderedAscending }
+    }
+
+    public func matchesSearchText(_ searchText: String) -> Bool {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else {
+            return true
+        }
+
+        let haystack = [
+            name,
+            description,
+            expectedTelemetryTags.map { "\($0.key) \($0.value)" }.joined(separator: " "),
+            route.compactMap(\.label).joined(separator: " ")
+        ].joined(separator: " ")
+
+        return haystack.localizedCaseInsensitiveContains(query)
+    }
+
+    public func hasTag(_ tag: String?) -> Bool {
+        guard let tag, !tag.isEmpty else {
+            return true
+        }
+        return expectedTelemetryTags.keys.contains(tag)
+    }
+
+    public func reversedRoutePreservingTiming() -> TelemetryScenario {
+        guard route.count > 1 else {
+            return self
+        }
+
+        let original = route
+        let reversed = Array(original.reversed())
+        let originalIntervals = original.indices.dropFirst().map { index in
+            max(0, original[index].elapsedSeconds - original[index - 1].elapsedSeconds)
+        }.reversed()
+
+        var elapsed: TimeInterval = 0
+        var intervalIterator = originalIntervals.makeIterator()
+        let points = reversed.enumerated().map { index, point in
+            if index > 0 {
+                elapsed += intervalIterator.next() ?? 0
+            }
+
+            var label = point.label
+            if index == 0 {
+                label = original.first?.label ?? point.label
+            } else if index == reversed.count - 1 {
+                label = original.last?.label ?? point.label
+            }
+
+            return RoutePoint(
+                id: point.id,
+                latitude: point.latitude,
+                longitude: point.longitude,
+                altitude: point.altitude,
+                horizontalAccuracy: point.horizontalAccuracy,
+                verticalAccuracy: point.verticalAccuracy,
+                speed: point.speed,
+                course: point.course,
+                elapsedSeconds: elapsed,
+                dwellSeconds: point.dwellSeconds,
+                label: label
+            )
+        }
+
+        return TelemetryScenario(
+            id: id,
+            name: name,
+            description: description,
+            route: points,
+            networkProfile: networkProfile,
+            expectedTelemetryTags: expectedTelemetryTags
+        )
+    }
+}
+
+public struct RouteMetrics: Codable, Equatable, Sendable {
+    public var pointCount: Int
+    public var totalDistanceMeters: Double
+    public var totalDurationSeconds: TimeInterval
+    public var totalDwellSeconds: TimeInterval
+    public var averageSpeedMetersPerSecond: Double
+
+    public init(route: [RoutePoint]) {
+        pointCount = route.count
+        totalDistanceMeters = zip(route, route.dropFirst()).reduce(0) { partial, pair in
+            partial + CLLocation(latitude: pair.0.latitude, longitude: pair.0.longitude)
+                .distance(from: CLLocation(latitude: pair.1.latitude, longitude: pair.1.longitude))
+        }
+        totalDwellSeconds = route.reduce(0) { $0 + $1.dwellSeconds }
+        totalDurationSeconds = (route.last?.elapsedSeconds ?? 0) + (route.last?.dwellSeconds ?? 0)
+        averageSpeedMetersPerSecond = totalDurationSeconds > 0 ? totalDistanceMeters / totalDurationSeconds : 0
+    }
 }
 
 public struct RoutePoint: Codable, Equatable, Identifiable, Sendable {

@@ -2,6 +2,7 @@ import MapKit
 import AppKit
 import SwiftUI
 import TelemetryLocationKit
+import UniformTypeIdentifiers
 
 @main
 struct TelemetryScenarioStudioApp: App {
@@ -75,6 +76,8 @@ final class ScenarioStudioStore {
     var routePlaybackState: RoutePlaybackState = .idle
     var routePlaybackSpeed: Double = 1
     var routePlaybackLoops = false
+    var routeTimelineTime: TimeInterval = 0
+    var routeTimelinePreviewCoordinate: CLLocationCoordinate2D?
     var gpxPlaybackState = GPXPlaybackStatus()
     var selectedTemplateKind: ParameterizedScenarioKind = .delivery
     var templateStartLatitudeText = "31.2304"
@@ -99,11 +102,20 @@ final class ScenarioStudioStore {
     var generatedDebugGPXPath: String?
     var selectedPointID: String?
     var plannedRoute: [MapCoordinate] = []
+    var routeMapMode: RouteMapMode = .straightLine
+    var isPlannedRouteStale = false
     var isPlanningRoute = false
     var exportedGPX: String = ""
     var exportedJSON: String = ""
     var importText: String = ""
     var scenarioRenameText: String = ""
+    var scenarioLibraryDirectoryPath: String = ""
+    var scenarioSearchText: String = ""
+    var selectedScenarioTag: String?
+    var scenarioTagKeyText: String = ""
+    var scenarioTagValueText: String = ""
+    var scenarioLibraryStatus: String?
+    var scenarioLibrarySaveError: String?
     var recentScenarioIDs: [String] = []
     var networkLatencyEndpointText = "https://www.apple.com/library/test/success.html"
     var networkIPEndpointText = "https://api.ipify.org?format=json"
@@ -145,6 +157,7 @@ final class ScenarioStudioStore {
 
     private static let languageDefaultsKey = "TelemetryScenarioStudio.language"
     private static let scenariosDefaultsKey = "TelemetryScenarioStudio.scenarios"
+    private static let scenarioLibraryDirectoryDefaultsKey = "TelemetryScenarioStudio.scenarioLibraryDirectory"
     private static let recentScenarioIDsDefaultsKey = "TelemetryScenarioStudio.recentScenarioIDs"
     private static let recentLocationsDefaultsKey = "TelemetryScenarioStudio.recentLocations"
     private static let favoriteLocationsDefaultsKey = "TelemetryScenarioStudio.favoriteLocations"
@@ -170,6 +183,7 @@ final class ScenarioStudioStore {
             sidebarSelection = .scenario(newValue.id)
             scenarioRenameText = newValue.name
             markScenarioRecentlyOpened(newValue.id)
+            updateRouteTimeline(time: min(routeTimelineTime, newValue.duration))
             saveScenarios()
         }
     }
@@ -179,27 +193,77 @@ final class ScenarioStudioStore {
     }
 
     var telemetryPreview: TelemetryEventPreview {
-        TelemetryEventPreview.scenarioPreview(
-            scenario: selectedScenario,
-            routePoint: selectedScenario.route.first,
+        let scenario = selectedScenario
+        let pointIndex = routeTimelinePointIndex ?? scenario.route.firstIndex { $0.id == selectedPointID }
+        let point = pointIndex.flatMap { scenario.route.indices.contains($0) ? scenario.route[$0] : nil }
+        let location: CLLocation?
+        if let coordinate = routeTimelinePreviewCoordinate {
+            location = CLLocation(
+                coordinate: coordinate,
+                altitude: point?.altitude ?? 0,
+                horizontalAccuracy: point?.horizontalAccuracy ?? 5,
+                verticalAccuracy: point?.verticalAccuracy ?? 5,
+                course: point?.course ?? -1,
+                speed: point?.speed ?? 0,
+                timestamp: Date()
+            )
+        } else {
+            location = nil
+        }
+        return TelemetryEventPreview.scenarioPreview(
+            scenario: scenario,
+            location: location,
+            routePoint: point ?? scenario.route.first,
+            routePointIndex: pointIndex,
+            routeElapsedSeconds: routeTimelineTime,
             ipResult: ipGeolocationResult,
             dnsResult: dnsLeakResult
+        )
+    }
+
+    var deviceTelemetryPreview: TelemetryEventPreview? {
+        guard let coordinate = deviceLocationStatus.coordinate else {
+            return nil
+        }
+        return TelemetryEventPreview(
+            scenarioID: deviceLocationStatus.scenarioID ?? selectedScenario.id,
+            source: "qa_sdk",
+            isSimulated: true,
+            latitude: coordinate.latitude,
+            longitude: coordinate.longitude,
+            scenarioName: deviceLocationStatus.scenarioName ?? selectedScenario.name,
+            routePointIndex: deviceLocationStatus.pointIndex,
+            routeElapsedSeconds: deviceLocationStatus.pointIndex.flatMap { index in
+                selectedScenario.route.indices.contains(index) ? selectedScenario.route[index].elapsedSeconds : nil
+            },
+            vpnNodeID: selectedScenario.networkProfile?.vpnNode?.id,
+            vpnNodeName: selectedScenario.networkProfile?.vpnNode?.displayName,
+            vpnRegionCode: selectedScenario.networkProfile?.vpnNode?.regionCode ?? selectedScenario.networkProfile?.regionCode,
+            publicIPAddress: ipGeolocationResult?.ipAddress,
+            ipCountryCode: ipGeolocationResult?.countryCode ?? selectedScenario.networkProfile?.expectedCountryCode,
+            dnsLeakDetected: dnsLeakResult?.leakDetected,
+            tags: selectedScenario.expectedTelemetryTags
         )
     }
 
     init() {
         let savedLanguage = UserDefaults.standard.string(forKey: Self.languageDefaultsKey)
         self.language = savedLanguage.flatMap(StudioLanguage.init(rawValue:)) ?? .english
-        self.scenarios = Self.loadScenarios()
+        let applicationSupportDirectory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let defaultLibraryDirectory = ScenarioLibrary.defaultDirectory(in: applicationSupportDirectory)
+        self.scenarioLibraryDirectoryPath = UserDefaults.standard.string(forKey: Self.scenarioLibraryDirectoryDefaultsKey) ?? defaultLibraryDirectory.path
+        self.scenarios = []
         self.recentScenarioIDs = UserDefaults.standard.stringArray(forKey: Self.recentScenarioIDsDefaultsKey) ?? []
         let defaultWorkspacePath = xcodeDebugSessionService.defaultWorkspacePath()
         self.xcodeWorkspacePath = defaultWorkspacePath
         self.xcodeWorkspaceName = URL(fileURLWithPath: defaultWorkspacePath).lastPathComponent
         self.xcodeSchemeName = "TelemetryQAConsole"
+        loadScenarioLibrary()
         selectedScenarioID = scenarios.first?.id
         sidebarSelection = scenarios.first.map { .scenario($0.id) }
         selectedPointID = scenarios.first?.route.first?.id
         scenarioRenameText = scenarios.first?.name ?? ""
+        updateRouteTimeline(time: selectedScenario.route.first?.elapsedSeconds ?? 0)
         recentLocations = Self.loadLocations(forKey: Self.recentLocationsDefaultsKey)
         favoriteLocations = Self.loadLocations(forKey: Self.favoriteLocationsDefaultsKey)
         selectedVPNNodeID = vpnNodes.first?.id
@@ -219,7 +283,8 @@ final class ScenarioStudioStore {
         scenario.route.append(point)
         selectedScenario = scenario
         selectedPointID = point.id
-        plannedRoute = []
+        updateRouteTimeline(time: point.elapsedSeconds)
+        markRouteGeometryChanged()
     }
 
     func addPoint(at coordinate: CLLocationCoordinate2D) {
@@ -236,19 +301,60 @@ final class ScenarioStudioStore {
         scenario.route.append(point)
         selectedScenario = scenario
         selectedPointID = point.id
-        plannedRoute = []
+        updateRouteTimeline(time: point.elapsedSeconds)
+        markRouteGeometryChanged()
     }
 
     func removePoint(_ point: RoutePoint) {
         var scenario = selectedScenario
+        guard scenario.route.count > 1 else {
+            errorMessage = text("route_keep_one_point")
+            return
+        }
         scenario.route.removeAll { $0.id == point.id }
         selectedScenario = scenario
         selectedPointID = scenario.route.first?.id
-        plannedRoute = []
+        updateRouteTimeline(time: selectedScenario.route.first?.elapsedSeconds ?? 0)
+        markRouteGeometryChanged()
     }
 
     func selectPoint(_ point: RoutePoint) {
         selectedPointID = point.id
+        updateRouteTimeline(time: point.elapsedSeconds)
+    }
+
+    func updatePoint(_ pointID: String, coordinate: CLLocationCoordinate2D) {
+        var scenario = selectedScenario
+        guard let index = scenario.route.firstIndex(where: { $0.id == pointID }) else {
+            return
+        }
+        scenario.route[index].latitude = coordinate.latitude
+        scenario.route[index].longitude = coordinate.longitude
+        selectedScenario = scenario
+        selectedPointID = pointID
+        updateRouteTimeline(time: scenario.route[index].elapsedSeconds)
+        markRouteGeometryChanged()
+    }
+
+    func swapRouteEndpoints() {
+        guard selectedScenario.route.count > 1 else {
+            errorMessage = text("route_swap_needs_two_points")
+            return
+        }
+        selectedScenario = selectedScenario.reversedRoutePreservingTiming()
+        selectedPointID = selectedScenario.route.first?.id
+        updateRouteTimeline(time: 0)
+        markRouteGeometryChanged()
+        errorMessage = nil
+    }
+
+    private func markRouteGeometryChanged() {
+        if routeMapMode == .roadPlanning {
+            isPlannedRouteStale = true
+        } else {
+            plannedRoute = []
+            isPlannedRouteStale = false
+        }
     }
 
     func planRoute() async {
@@ -273,6 +379,8 @@ final class ScenarioStudioStore {
                 }
             }
             plannedRoute = coordinates
+            routeMapMode = .roadPlanning
+            isPlannedRouteStale = false
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -307,7 +415,20 @@ final class ScenarioStudioStore {
             expectedTelemetryTags: existing.expectedTelemetryTags
         )
         selectedPointID = points.first?.id
+        updateRouteTimeline(time: points.first?.elapsedSeconds ?? 0)
+        routeMapMode = .roadPlanning
+        isPlannedRouteStale = false
         errorMessage = nil
+    }
+
+    func setRouteMapMode(_ mode: RouteMapMode) {
+        routeMapMode = mode
+        if mode == .straightLine {
+            plannedRoute = []
+            isPlannedRouteStale = false
+        } else if plannedRoute.isEmpty, selectedScenario.route.count >= 2 {
+            isPlannedRouteStale = true
+        }
     }
 
     func useCurrentLocationAsTemplateStart() {
@@ -382,6 +503,7 @@ final class ScenarioStudioStore {
                 ]
             )
             selectedPointID = points.first?.id
+            updateRouteTimeline(time: points.first?.elapsedSeconds ?? 0)
             plannedRoute = []
             exportedGPX = ""
             exportedJSON = ""
@@ -498,6 +620,11 @@ final class ScenarioStudioStore {
     }
 
     func selectSidebar(_ selection: StudioSidebarSelection?) {
+        if case let .scenario(id) = selection,
+           id != selectedScenarioID,
+           !confirmSimulationChangeIfNeeded() {
+            return
+        }
         sidebarSelection = selection
         switch selection {
         case let .scenario(id):
@@ -506,6 +633,7 @@ final class ScenarioStudioStore {
             selectedPointID = selectedScenario.route.first?.id
             scenarioRenameText = selectedScenario.name
             markScenarioRecentlyOpened(id)
+            updateRouteTimeline(time: selectedScenario.route.first?.elapsedSeconds ?? 0)
             plannedRoute = []
         case .developerDevices:
             selectedModule = .developerDevices
@@ -516,6 +644,16 @@ final class ScenarioStudioStore {
         case nil:
             break
         }
+    }
+
+    func selectDeveloperDevice(_ device: DeveloperDevice) {
+        guard device.id != selectedDeveloperDeviceID else {
+            return
+        }
+        guard confirmSimulationChangeIfNeeded() else {
+            return
+        }
+        selectedDeveloperDeviceID = device.id
     }
 
     func selectModule(_ module: StudioModule) {
@@ -550,6 +688,30 @@ final class ScenarioStudioStore {
         }
 
         isRefreshingDeveloperDevices = false
+    }
+
+    @discardableResult
+    private func confirmSimulationChangeIfNeeded() -> Bool {
+        guard hasActiveSimulation else {
+            return true
+        }
+
+        let alert = NSAlert()
+        alert.messageText = text("active_simulation_switch_title")
+        alert.informativeText = text("active_simulation_switch_body")
+        alert.addButton(withTitle: text("clear_and_continue"))
+        alert.addButton(withTitle: text("cancel"))
+        alert.addButton(withTitle: text("continue_without_clearing"))
+
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            Task { await clearAllSimulatedLocationBeforeExit() }
+            return true
+        case .alertSecondButtonReturn:
+            return false
+        default:
+            return true
+        }
     }
 
     func setSelectedDeviceLocation() async {
@@ -733,6 +895,40 @@ final class ScenarioStudioStore {
         isRunningHealthCheck = false
     }
 
+    func copyHealthReportMarkdown() {
+        guard let deviceHealthCheck else {
+            return
+        }
+        copyToPasteboard(deviceHealthCheck.markdownReport)
+        developerDeviceStatus = text("health_report_copied")
+    }
+
+    func copyHealthReportJSON() {
+        guard let deviceHealthCheck else {
+            return
+        }
+        copyToPasteboard(deviceHealthCheck.jsonReport)
+        developerDeviceStatus = text("health_report_copied")
+    }
+
+    func copyTelemetryPreviewJSON(deviceState: Bool = false) {
+        let preview = deviceState ? (deviceTelemetryPreview ?? telemetryPreview) : telemetryPreview
+        copyToPasteboard(preview.prettyPrintedJSONString)
+        networkDiagnosticsStatus = text("telemetry_json_copied")
+    }
+
+    func copyTelemetryPreviewFields(deviceState: Bool = false) {
+        let preview = deviceState ? (deviceTelemetryPreview ?? telemetryPreview) : telemetryPreview
+        let fieldText = preview.payloadFields.map { "\($0.0)=\($0.1)" }.joined(separator: "\n")
+        copyToPasteboard(fieldText)
+        networkDiagnosticsStatus = text("telemetry_fields_copied")
+    }
+
+    private func copyToPasteboard(_ value: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(value, forType: .string)
+    }
+
     func startGPXPlaybackToDevice() {
         guard let selectedDevice else {
             xcodeDebugStatus = text("developer_devices_select_first")
@@ -838,6 +1034,96 @@ final class ScenarioStudioStore {
         return String(format: text("xcode_auto_summary"), device, selectedScenario.name)
     }
 
+    var routeTimelineDuration: TimeInterval {
+        selectedScenario.duration
+    }
+
+    var routeTimelinePointIndex: Int? {
+        routePointIndex(at: routeTimelineTime, in: selectedScenario)
+    }
+
+    var routeTimelineSegments: [RouteTimelineSegment] {
+        let route = selectedScenario.route
+        guard !route.isEmpty else {
+            return []
+        }
+        return route.indices.map { index in
+            let point = route[index]
+            let nextElapsed = index + 1 < route.count ? route[index + 1].elapsedSeconds : point.elapsedSeconds
+            return RouteTimelineSegment(
+                id: point.id,
+                index: index,
+                label: point.label ?? pointLabel(index + 1),
+                elapsedSeconds: point.elapsedSeconds,
+                dwellSeconds: point.dwellSeconds,
+                segmentSeconds: max(0, nextElapsed - point.elapsedSeconds - point.dwellSeconds),
+                coordinate: point.coordinate
+            )
+        }
+    }
+
+    func updateRouteTimeline(time: TimeInterval) {
+        guard !scenarios.isEmpty else {
+            routeTimelineTime = 0
+            routeTimelinePreviewCoordinate = nil
+            return
+        }
+
+        let scenario = selectedScenario
+        let clamped = min(max(0, time), scenario.duration)
+        routeTimelineTime = clamped
+
+        if let interpolator = try? RouteInterpolator(scenario: scenario) {
+            routeTimelinePreviewCoordinate = interpolator.location(at: clamped).coordinate
+        } else {
+            routeTimelinePreviewCoordinate = scenario.route.first?.coordinate
+        }
+
+        if let index = routePointIndex(at: clamped, in: scenario), scenario.route.indices.contains(index) {
+            selectedPointID = scenario.route[index].id
+        }
+    }
+
+    func jumpRoutePlayback(to time: TimeInterval) {
+        updateRouteTimeline(time: time)
+        guard routePlaybackState == .running || routePlaybackState == .paused else {
+            return
+        }
+        guard let selectedDevice, selectedDevice.locationCapability.isAvailable else {
+            return
+        }
+
+        let wasPaused = routePlaybackState == .paused
+        let scenario = selectedScenario
+        let startIndex = routePointIndex(at: routeTimelineTime, in: scenario) ?? 0
+        stopRoutePlayback(resetToIdle: false)
+        routePlaybackState = wasPaused ? .paused : .running
+        deviceLocationStatus.playbackState = routePlaybackState
+        routePlaybackTask = Task { [weak self] in
+            guard let self else {
+                return
+            }
+            await self.runRoutePlayback(
+                device: selectedDevice,
+                scenario: scenario,
+                speed: max(routePlaybackSpeed, 0.1),
+                loops: routePlaybackLoops,
+                startIndex: startIndex
+            )
+        }
+    }
+
+    private func routePointIndex(at time: TimeInterval, in scenario: TelemetryScenario) -> Int? {
+        guard !scenario.route.isEmpty else {
+            return nil
+        }
+        var result = 0
+        for index in scenario.route.indices where scenario.route[index].elapsedSeconds <= time {
+            result = index
+        }
+        return result
+    }
+
     func startRoutePlayback() {
         guard let selectedDevice else {
             developerDeviceStatus = text("developer_devices_select_first")
@@ -874,8 +1160,9 @@ final class ScenarioStudioStore {
 
         let speed = max(routePlaybackSpeed, 0.1)
         let shouldLoop = routePlaybackLoops
+        let startIndex = routePointIndex(at: routeTimelineTime, in: scenario) ?? 0
         routePlaybackTask = Task { [weak self] in
-            await self?.runRoutePlayback(device: selectedDevice, scenario: scenario, speed: speed, loops: shouldLoop)
+            await self?.runRoutePlayback(device: selectedDevice, scenario: scenario, speed: speed, loops: shouldLoop, startIndex: startIndex)
         }
     }
 
@@ -910,10 +1197,16 @@ final class ScenarioStudioStore {
         device: DeveloperDevice,
         scenario: TelemetryScenario,
         speed: Double,
-        loops: Bool
+        loops: Bool,
+        startIndex: Int = 0
     ) async {
+        var firstCycle = true
         repeat {
-            for index in scenario.route.indices {
+            let lowerBound = firstCycle ? min(max(startIndex, 0), max(scenario.route.count - 1, 0)) : 0
+            let skipsInitialDelay = firstCycle
+            firstCycle = false
+
+            for index in scenario.route.indices.dropFirst(lowerBound) {
                 if Task.isCancelled {
                     return
                 }
@@ -925,7 +1218,7 @@ final class ScenarioStudioStore {
                     return
                 }
 
-                if index > 0 {
+                if index > 0, !(skipsInitialDelay && index == lowerBound) {
                     let previous = scenario.route[index - 1]
                     let current = scenario.route[index]
                     let delay = max(0, current.elapsedSeconds - previous.elapsedSeconds) / speed
@@ -957,6 +1250,7 @@ final class ScenarioStudioStore {
                         pointIndex: index,
                         totalPoints: scenario.route.count
                     )
+                    updateRouteTimeline(time: point.elapsedSeconds)
                     developerDeviceStatus = String(
                         format: text("playback_applied_point"),
                         index + 1,
@@ -1028,6 +1322,16 @@ final class ScenarioStudioStore {
         await clearSelectedDeviceLocation()
     }
 
+    func clearGlobalSimulationStatus() async {
+        if let statusDeviceID = deviceLocationStatus.deviceID,
+           let selectedDeveloperDeviceID,
+           statusDeviceID != selectedDeveloperDeviceID {
+            developerDeviceStatus = text("global_clear_select_device_first")
+            return
+        }
+        await clearAllSimulatedLocationBeforeExit()
+    }
+
     func duplicateSelectedScenario() {
         let original = selectedScenario
         let scenario = TelemetryScenario(
@@ -1059,6 +1363,30 @@ final class ScenarioStudioStore {
         saveScenarios()
     }
 
+    func createScenario() {
+        let point = RoutePoint(
+            latitude: 31.2304,
+            longitude: 121.4737,
+            speed: 0,
+            elapsedSeconds: 0,
+            label: text("start")
+        )
+        let scenario = TelemetryScenario(
+            name: text("new_scenario"),
+            description: text("new_scenario_description"),
+            route: [point],
+            expectedTelemetryTags: ["is_simulated": "true"]
+        )
+        scenarios.append(scenario)
+        selectedScenarioID = scenario.id
+        sidebarSelection = .scenario(scenario.id)
+        scenarioRenameText = scenario.name
+        selectedPointID = point.id
+        markScenarioRecentlyOpened(scenario.id)
+        saveScenarios()
+        errorMessage = nil
+    }
+
     func renameSelectedScenario() {
         let name = scenarioRenameText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else {
@@ -1076,6 +1404,7 @@ final class ScenarioStudioStore {
             errorMessage = text("scenario_delete_last_error")
             return
         }
+        let deleted = selectedScenario
         scenarios.removeAll { $0.id == selectedScenarioID }
         recentScenarioIDs.removeAll { $0 == selectedScenarioID }
         let next = scenarios.first
@@ -1083,25 +1412,117 @@ final class ScenarioStudioStore {
         sidebarSelection = next.map { .scenario($0.id) }
         selectedPointID = next?.route.first?.id
         scenarioRenameText = next?.name ?? ""
+        try? ScenarioLibrary.delete(deleted, from: scenarioLibraryDirectory)
         saveRecentScenarioIDs()
         saveScenarios()
         errorMessage = nil
     }
 
     func resetScenarioLibraryToTemplates() {
-        scenarios = ScenarioTemplates.all
-        selectedScenarioID = scenarios.first?.id
-        sidebarSelection = scenarios.first.map { .scenario($0.id) }
-        selectedPointID = scenarios.first?.route.first?.id
-        scenarioRenameText = scenarios.first?.name ?? ""
-        recentScenarioIDs = []
+        let existingIDs = Set(scenarios.map(\.id))
+        let existingNames = Set(scenarios.map(\.name))
+        for template in ScenarioTemplates.all where !existingIDs.contains(template.id) && !existingNames.contains(template.name) {
+            scenarios.append(template)
+        }
+        if selectedScenarioID == nil {
+            selectedScenarioID = scenarios.first?.id
+            sidebarSelection = scenarios.first.map { .scenario($0.id) }
+            selectedPointID = scenarios.first?.route.first?.id
+            scenarioRenameText = scenarios.first?.name ?? ""
+        }
         saveRecentScenarioIDs()
         saveScenarios()
+    }
+
+    var scenarioLibraryDirectory: URL {
+        URL(fileURLWithPath: scenarioLibraryDirectoryPath, isDirectory: true)
+    }
+
+    var filteredScenarios: [TelemetryScenario] {
+        scenarios.filter { scenario in
+            scenario.matchesSearchText(scenarioSearchText) && scenario.hasTag(selectedScenarioTag)
+        }
+    }
+
+    var availableScenarioTags: [String] {
+        Array(Set(scenarios.flatMap { $0.expectedTelemetryTags.keys })).sorted()
     }
 
     var recentScenarios: [TelemetryScenario] {
         recentScenarioIDs.compactMap { id in
             scenarios.first { $0.id == id }
+        }
+    }
+
+    func addSelectedScenarioTag() {
+        let key = scenarioTagKeyText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else {
+            return
+        }
+        let value = scenarioTagValueText.trimmingCharacters(in: .whitespacesAndNewlines)
+        var scenario = selectedScenario
+        scenario.expectedTelemetryTags[key] = value.isEmpty ? "true" : value
+        selectedScenario = scenario
+        scenarioTagKeyText = ""
+        scenarioTagValueText = ""
+    }
+
+    func removeSelectedScenarioTag(_ key: String) {
+        var scenario = selectedScenario
+        scenario.expectedTelemetryTags.removeValue(forKey: key)
+        selectedScenario = scenario
+        if selectedScenarioTag == key {
+            selectedScenarioTag = nil
+        }
+    }
+
+    func exportSelectedScenarioFile() {
+        do {
+            let panel = NSSavePanel()
+            panel.allowedContentTypes = [.json]
+            panel.nameFieldStringValue = "\(ScenarioLibrary.safeFileStem(for: selectedScenario)).\(ScenarioCodec.fileExtension)"
+            guard panel.runModal() == .OK, let url = panel.url else {
+                return
+            }
+            try ScenarioCodec.encode(selectedScenario).write(to: url, options: [.atomic])
+            scenarioLibraryStatus = String(format: text("scenario_exported_to"), url.path)
+            errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func importScenarioFile() {
+        do {
+            let panel = NSOpenPanel()
+            panel.allowedContentTypes = [.json]
+            panel.allowsMultipleSelection = true
+            guard panel.runModal() == .OK else {
+                return
+            }
+            var existingIDs = Set(scenarios.map(\.id))
+            var existingNames = Set(scenarios.map(\.name))
+            var imported: [TelemetryScenario] = []
+            for url in panel.urls {
+                let decoded = try ScenarioCodec.decode(try Data(contentsOf: url))
+                let copy = ScenarioLibrary.importedCopy(from: decoded, existingIDs: existingIDs, existingNames: existingNames)
+                imported.append(copy)
+                existingIDs.insert(copy.id)
+                existingNames.insert(copy.name)
+            }
+            scenarios.append(contentsOf: imported)
+            if let first = imported.first {
+                selectedScenarioID = first.id
+                sidebarSelection = .scenario(first.id)
+                selectedPointID = first.route.first?.id
+                scenarioRenameText = first.name
+                markScenarioRecentlyOpened(first.id)
+            }
+            saveScenarios()
+            scenarioLibraryStatus = String(format: text("scenario_imported_count"), imported.count)
+            errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
         }
     }
 
@@ -1113,19 +1534,48 @@ final class ScenarioStudioStore {
     }
 
     private func saveScenarios() {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        if let data = try? encoder.encode(scenarios) {
-            UserDefaults.standard.set(data, forKey: Self.scenariosDefaultsKey)
+        UserDefaults.standard.set(scenarioLibraryDirectoryPath, forKey: Self.scenarioLibraryDirectoryDefaultsKey)
+        do {
+            try FileManager.default.createDirectory(at: scenarioLibraryDirectory, withIntermediateDirectories: true)
+            for scenario in scenarios {
+                _ = try ScenarioLibrary.write(scenario, to: scenarioLibraryDirectory)
+            }
+            scenarioLibrarySaveError = nil
+            scenarioLibraryStatus = String(format: text("scenario_autosaved"), scenarios.count)
+        } catch {
+            scenarioLibrarySaveError = error.localizedDescription
         }
     }
 
-    private static func loadScenarios() -> [TelemetryScenario] {
+    private func loadScenarioLibrary() {
+        do {
+            try FileManager.default.createDirectory(at: scenarioLibraryDirectory, withIntermediateDirectories: true)
+            let files = try ScenarioLibrary.loadScenarios(from: scenarioLibraryDirectory)
+            if !files.isEmpty {
+                scenarios = files.map(\.scenario)
+                scenarioLibraryStatus = String(format: text("scenario_loaded_count"), scenarios.count)
+                return
+            }
+
+            let migrated = Self.loadLegacyScenarios()
+            scenarios = migrated.isEmpty ? ScenarioTemplates.all : migrated
+            saveScenarios()
+            scenarioLibraryStatus = String(format: text("scenario_loaded_count"), scenarios.count)
+        } catch {
+            scenarioLibrarySaveError = error.localizedDescription
+            scenarios = Self.loadLegacyScenarios()
+            if scenarios.isEmpty {
+                scenarios = ScenarioTemplates.all
+            }
+        }
+    }
+
+    private static func loadLegacyScenarios() -> [TelemetryScenario] {
         let decoder = JSONDecoder()
         guard let data = UserDefaults.standard.data(forKey: Self.scenariosDefaultsKey),
               let scenarios = try? decoder.decode([TelemetryScenario].self, from: data),
               !scenarios.isEmpty else {
-            return ScenarioTemplates.all
+            return []
         }
         return scenarios
     }
@@ -1313,6 +1763,23 @@ enum StudioModule: String, CaseIterable, Identifiable {
     }
 }
 
+enum RouteMapMode: String, CaseIterable, Identifiable {
+    case straightLine
+    case roadPlanning
+
+    var id: String { rawValue }
+
+    @MainActor
+    func title(in store: ScenarioStudioStore) -> String {
+        switch self {
+        case .straightLine:
+            store.text("route_mode_straight")
+        case .roadPlanning:
+            store.text("route_mode_road")
+        }
+    }
+}
+
 enum StudioLocalizations {
     static func text(_ key: String, language: StudioLanguage) -> String {
         switch language {
@@ -1340,6 +1807,9 @@ enum StudioLocalizations {
         "platform": "Platform",
         "model": "Model",
         "status": "Status",
+        "source": "Source",
+        "coordinate": "Coordinate",
+        "progress": "Progress",
         "pairing": "Pairing",
         "hostname": "Hostname",
         "location_control": "Location Control",
@@ -1460,6 +1930,11 @@ enum StudioLocalizations {
         "checking": "Checking...",
         "health_check_empty": "Select a device and refresh to inspect pairing, tunnel, DDI, and runtime readiness.",
         "health_checked_at": "Checked at %@",
+        "health_checked_at_short": "Checked",
+        "blocking_failures": "Blocking Failures",
+        "copy_markdown_report": "Copy Markdown",
+        "copy_json_report": "Copy JSON",
+        "health_report_copied": "Health report copied.",
         "health_status_pass": "Pass",
         "health_status_warn": "Warn",
         "health_status_fail": "Fail",
@@ -1471,18 +1946,41 @@ enum StudioLocalizations {
         "active_simulation_exit_body": "Clear the selected device location before quitting so QA devices do not stay in a simulated state.",
         "clear_and_quit": "Clear and Quit",
         "quit_without_clearing": "Quit Without Clearing",
+        "active_simulation_switch_title": "Simulated location is active",
+        "active_simulation_switch_body": "Switching device or scenario while simulation is active can leave the previous device at the last simulated coordinate.",
+        "clear_and_continue": "Clear and Continue",
+        "continue_without_clearing": "Continue Without Clearing",
+        "global_clear_select_device_first": "Select the device shown in the global simulation bar before clearing its simulated location.",
         "cancel": "Cancel",
         "scenario_library": "Scenario Library",
         "scenario_library_description": "Manage local scenarios, recent opens, import/export, copies, names, and deletion.",
+        "new_scenario": "New Scenario",
+        "new_scenario_description": "Empty QA scenario created in the local library.",
         "scenario_name": "Scenario name",
         "rename_scenario": "Rename",
         "duplicate_scenario": "Duplicate",
         "delete_scenario": "Delete",
         "reset_templates": "Reset Templates",
+        "import_scenario_file": "Import File",
+        "export_scenario_file": "Export File",
+        "scenario_search": "Search scenarios",
+        "scenario_tag_filter": "Tag filter",
+        "all_tags": "All Tags",
+        "scenario_tags": "Tags",
+        "tag_key": "Tag key",
+        "tag_value": "Tag value",
+        "add_tag": "Add Tag",
+        "scenario_exported_to": "Exported scenario to %@.",
+        "scenario_imported_count": "Imported %d scenario(s).",
+        "scenario_autosaved": "Auto-saved %d scenario(s) to the local library.",
+        "scenario_loaded_count": "Loaded %d scenario(s) from the local library.",
         "recent_scenarios": "Recent Scenarios",
         "scenario_copy_name": "%@ Copy",
         "scenario_name_required": "Scenario name cannot be empty.",
         "scenario_delete_last_error": "Keep at least one scenario in the local library.",
+        "route_timeline": "Route Timeline",
+        "timeline_preview_coordinate": "Preview %.6f, %.6f",
+        "segment": "Segment",
         "network_description": "Configure target-device VPN metadata for scenarios, then run Mac-local diagnostics for comparison. The iPhone exit IP changes only when Telemetry QA Console connects VPN on that iPhone.",
         "vpn_nodes": "VPN Nodes",
         "target_vpn_notice": "Target-device IP changes are applied by the iOS QA Console on the iPhone. This Studio page binds the node to scenario JSON and previews telemetry fields.",
@@ -1513,6 +2011,13 @@ enum StudioLocalizations {
         "no_leak_detected": "No leak detected",
         "telemetry_preview": "Telemetry Preview",
         "telemetry_preview_description": "Read-only payload preview for QA. This does not send data to production telemetry.",
+        "copy_fields": "Copy Fields",
+        "copy_json": "Copy JSON",
+        "copy_device_json": "Copy Device JSON",
+        "scenario_payload_json": "Scenario Payload JSON",
+        "device_payload_json": "Device State Payload JSON",
+        "telemetry_json_copied": "Telemetry JSON copied.",
+        "telemetry_fields_copied": "Telemetry fields copied.",
         "automatic": "Automatic",
         "developer_devices_found": "Found %d developer devices.",
         "developer_devices_select_first": "Select a device first.",
@@ -1531,10 +2036,24 @@ enum StudioLocalizations {
         "export_json": "Export JSON",
         "map": "Map",
         "fit_route": "Fit Route",
+        "route_mode": "Route Mode",
+        "route_mode_straight": "Manual Straight",
+        "route_mode_road": "Road Planning",
+        "swap_endpoints": "Swap Start/End",
+        "planned_route_stale": "Route points changed. Re-run road planning to refresh the green route.",
+        "route_swap_needs_two_points": "Add at least two route points before swapping endpoints.",
+        "route_keep_one_point": "Keep at least one route point.",
+        "total_distance": "Distance",
+        "total_duration": "Duration",
+        "average_speed": "Avg Speed",
+        "points": "Points",
+        "total_dwell": "Dwell Total",
         "planning": "Planning...",
         "plan_route": "Plan Route",
         "apply_planned_route": "Apply Planned Route",
         "map_hint_add": "Click map to add a route point",
+        "map_hint_drag": "Drag points to adjust route",
+        "map_hint_delete": "Right-click a point to delete",
         "map_hint_blue": "Blue is scenario route",
         "map_hint_green": "Green is planned MapKit route",
         "route": "Route",
@@ -1572,6 +2091,9 @@ enum StudioLocalizations {
         "platform": "平台",
         "model": "型号",
         "status": "状态",
+        "source": "来源",
+        "coordinate": "坐标",
+        "progress": "进度",
         "pairing": "配对",
         "hostname": "主机名",
         "location_control": "定位控制",
@@ -1692,6 +2214,11 @@ enum StudioLocalizations {
         "checking": "检查中...",
         "health_check_empty": "选择设备并刷新，以检查配对、隧道、DDI 和运行时状态。",
         "health_checked_at": "检查时间 %@",
+        "health_checked_at_short": "检查时间",
+        "blocking_failures": "阻断项",
+        "copy_markdown_report": "复制 Markdown",
+        "copy_json_report": "复制 JSON",
+        "health_report_copied": "健康报告已复制。",
         "health_status_pass": "通过",
         "health_status_warn": "警告",
         "health_status_fail": "失败",
@@ -1703,18 +2230,41 @@ enum StudioLocalizations {
         "active_simulation_exit_body": "退出前建议清除选中设备定位，避免 QA 设备停留在模拟定位状态。",
         "clear_and_quit": "清除并退出",
         "quit_without_clearing": "直接退出",
+        "active_simulation_switch_title": "模拟定位正在生效",
+        "active_simulation_switch_body": "模拟中切换设备或场景，可能会让前一个设备停留在最后一次模拟坐标。",
+        "clear_and_continue": "清除后继续",
+        "continue_without_clearing": "保留并继续",
+        "global_clear_select_device_first": "请先选择全局状态条中显示的设备，再清除该设备的模拟定位。",
         "cancel": "取消",
         "scenario_library": "场景库",
         "scenario_library_description": "管理本地场景、最近打开、导入导出、复制、重命名和删除。",
+        "new_scenario": "新建场景",
+        "new_scenario_description": "在本地场景库中新建的空 QA 场景。",
         "scenario_name": "场景名称",
         "rename_scenario": "重命名",
         "duplicate_scenario": "复制",
         "delete_scenario": "删除",
         "reset_templates": "重置模板",
+        "import_scenario_file": "导入文件",
+        "export_scenario_file": "导出文件",
+        "scenario_search": "搜索场景",
+        "scenario_tag_filter": "标签筛选",
+        "all_tags": "全部标签",
+        "scenario_tags": "标签",
+        "tag_key": "标签键",
+        "tag_value": "标签值",
+        "add_tag": "添加标签",
+        "scenario_exported_to": "已导出场景到 %@。",
+        "scenario_imported_count": "已导入 %d 个场景。",
+        "scenario_autosaved": "已自动保存 %d 个场景到本地场景库。",
+        "scenario_loaded_count": "已从本地场景库加载 %d 个场景。",
         "recent_scenarios": "最近场景",
         "scenario_copy_name": "%@ 副本",
         "scenario_name_required": "场景名称不能为空。",
         "scenario_delete_last_error": "本地场景库至少需要保留一个场景。",
+        "route_timeline": "路线时间轴",
+        "timeline_preview_coordinate": "预览 %.6f, %.6f",
+        "segment": "路段",
         "network_description": "为场景配置目标设备 VPN 元数据，并运行 Mac 本机诊断作为对比。iPhone 出口 IP 只会在 Telemetry QA Console 于该 iPhone 上连接 VPN 后改变。",
         "vpn_nodes": "VPN 节点",
         "target_vpn_notice": "目标设备 IP 由 iOS QA Console 在 iPhone 上连接 VPN 后生效。本页负责把节点写入场景 JSON，并预览遥测字段。",
@@ -1745,6 +2295,13 @@ enum StudioLocalizations {
         "no_leak_detected": "未发现泄漏",
         "telemetry_preview": "遥测预览",
         "telemetry_preview_description": "QA 只读 payload 预览，不会发送到生产遥测。",
+        "copy_fields": "复制字段",
+        "copy_json": "复制 JSON",
+        "copy_device_json": "复制设备 JSON",
+        "scenario_payload_json": "场景 Payload JSON",
+        "device_payload_json": "设备状态 Payload JSON",
+        "telemetry_json_copied": "遥测 JSON 已复制。",
+        "telemetry_fields_copied": "遥测字段已复制。",
         "automatic": "自动",
         "developer_devices_found": "发现 %d 台开发设备。",
         "developer_devices_select_first": "请先选择设备。",
@@ -1763,10 +2320,24 @@ enum StudioLocalizations {
         "export_json": "导出 JSON",
         "map": "地图",
         "fit_route": "适配路线",
+        "route_mode": "路径模式",
+        "route_mode_straight": "手动直线",
+        "route_mode_road": "道路规划",
+        "swap_endpoints": "互换起终点",
+        "planned_route_stale": "路线点已变化，请重新道路规划以刷新绿色路线。",
+        "route_swap_needs_two_points": "互换起终点前至少需要两个路线点。",
+        "route_keep_one_point": "至少需要保留一个路线点。",
+        "total_distance": "总距离",
+        "total_duration": "总时长",
+        "average_speed": "平均速度",
+        "points": "点数",
+        "total_dwell": "总停留",
         "planning": "规划中...",
         "plan_route": "规划路线",
         "apply_planned_route": "应用规划路线",
         "map_hint_add": "点击地图添加路线点",
+        "map_hint_drag": "拖动点调整路线",
+        "map_hint_delete": "右键点位删除",
         "map_hint_blue": "蓝色为场景路线",
         "map_hint_green": "绿色为 MapKit 规划路线",
         "route": "路线",
@@ -1860,6 +2431,16 @@ struct DeviceLocationStatusSnapshot {
     var totalPoints: Int?
     var playbackSpeed: Double = 1
     var loops = false
+}
+
+struct RouteTimelineSegment: Identifiable {
+    var id: String
+    var index: Int
+    var label: String
+    var elapsedSeconds: TimeInterval
+    var dwellSeconds: TimeInterval
+    var segmentSeconds: TimeInterval
+    var coordinate: CLLocationCoordinate2D
 }
 
 struct SavedMapLocation: Identifiable, Codable, Hashable {
@@ -2179,9 +2760,7 @@ struct ScenarioStudioView: View {
 
     private func contentWithSimulationBanner<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         VStack(spacing: 0) {
-            if store.hasActiveSimulation {
-                ActiveSimulationBanner(store: store)
-            }
+            GlobalSimulationStatusBar(store: store)
             content()
         }
     }
@@ -2196,7 +2775,7 @@ struct EmbeddedStudioSidebar: View {
 
             sidebarSection(store.text("scenarios"))
 
-            ForEach(store.scenarios) { scenario in
+            ForEach(store.filteredScenarios) { scenario in
                 StudioSidebarRow(
                     title: scenario.name,
                     subtitle: String(format: store.text("points_count"), scenario.route.count),
@@ -2312,6 +2891,48 @@ struct StudioSidebarRow: View {
     }
 }
 
+struct FlowLayout: Layout {
+    var spacing: CGFloat = 8
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? 600
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var rowHeight: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > 0, x + size.width > width {
+                x = 0
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
+
+        return CGSize(width: width, height: y + rowHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX
+        var y = bounds.minY
+        var rowHeight: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > bounds.minX, x + size.width > bounds.maxX {
+                x = bounds.minX
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
+            subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
+    }
+}
+
 struct StudioVisualEffectBackground: NSViewRepresentable {
     var material: NSVisualEffectView.Material = .sidebar
     var blendingMode: NSVisualEffectView.BlendingMode = .behindWindow
@@ -2331,32 +2952,74 @@ struct StudioVisualEffectBackground: NSViewRepresentable {
     }
 }
 
-struct ActiveSimulationBanner: View {
+struct GlobalSimulationStatusBar: View {
     @Bindable var store: ScenarioStudioStore
 
     var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "location.fill")
-                .foregroundStyle(.orange)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(store.text("active_simulation_title"))
-                    .font(.callout.weight(.semibold))
-                Text(store.activeSimulationSummary)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
+        let status = store.deviceLocationStatus
+
+        HStack(spacing: 14) {
+            Image(systemName: store.hasActiveSimulation ? "location.fill" : "location.slash")
+                .foregroundStyle(store.hasActiveSimulation ? .orange : .secondary)
+                .frame(width: 18)
+
+            statusCell(store.text("device"), status.deviceName ?? store.selectedDevice?.name ?? store.text("automatic"))
+            statusCell(store.text("status"), status.playbackState.title(in: store))
+            statusCell(store.text("scenario"), status.scenarioName ?? store.selectedScenario.name)
+            statusCell(store.text("source"), status.source.title(in: store))
+            statusCell(store.text("coordinate"), coordinateText(status.coordinate))
+            statusCell(store.text("progress"), progressText(status))
+
             Spacer()
+
+            Text(lastAppliedText(status.appliedAt))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
             Button(store.text("clear_simulation_now")) {
-                Task { await store.clearAllSimulatedLocationBeforeExit() }
+                Task { await store.clearGlobalSimulationStatus() }
             }
+            .disabled(!store.hasActiveSimulation)
         }
         .padding(.horizontal, 18)
-        .padding(.vertical, 10)
-        .background(Color.orange.opacity(0.10))
+        .padding(.vertical, 9)
+        .background(store.hasActiveSimulation ? Color.orange.opacity(0.10) : Color.primary.opacity(0.035))
         .overlay(alignment: .bottom) {
             Divider().opacity(0.5)
         }
+    }
+
+    private func statusCell(_ title: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(title)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.caption.monospacedDigit())
+                .lineLimit(1)
+        }
+        .frame(minWidth: 76, alignment: .leading)
+    }
+
+    private func coordinateText(_ coordinate: CLLocationCoordinate2D?) -> String {
+        guard let coordinate else {
+            return "-"
+        }
+        return String(format: "%.5f, %.5f", coordinate.latitude, coordinate.longitude)
+    }
+
+    private func progressText(_ status: DeviceLocationStatusSnapshot) -> String {
+        guard let pointIndex = status.pointIndex, let total = status.totalPoints, total > 0 else {
+            return "-"
+        }
+        return "\(pointIndex + 1)/\(total)"
+    }
+
+    private func lastAppliedText(_ date: Date?) -> String {
+        guard let date else {
+            return "-"
+        }
+        return date.formatted(date: .omitted, time: .standard)
     }
 }
 
@@ -2438,7 +3101,7 @@ struct DeviceListPanel: View {
                     ForEach(store.developerDevices) { device in
                         GridRow {
                             Button(device.name) {
-                                store.selectedDeveloperDeviceID = device.id
+                                store.selectDeveloperDevice(device)
                             }
                             .buttonStyle(.plain)
                             .foregroundStyle(device.id == store.selectedDeveloperDeviceID ? .orange : .primary)
@@ -2581,9 +3244,23 @@ struct DeviceHealthCheckPanel: View {
             }
 
             if let check = store.deviceHealthCheck {
-                Text(String(format: store.text("health_checked_at"), check.checkedAt.formatted(date: .omitted, time: .standard)))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                HStack(alignment: .top) {
+                    Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
+                        GridRow {
+                            healthSummaryCell(store.text("target_device"), check.deviceName)
+                            healthSummaryCell(store.text("status"), healthTitle(check.summaryStatus))
+                            healthSummaryCell(store.text("blocking_failures"), "\(check.blockingFailureCount)")
+                            healthSummaryCell(store.text("health_checked_at_short"), check.checkedAt.formatted(date: .omitted, time: .standard))
+                        }
+                    }
+                    Spacer()
+                    Button(store.text("copy_markdown_report")) {
+                        store.copyHealthReportMarkdown()
+                    }
+                    Button(store.text("copy_json_report")) {
+                        store.copyHealthReportJSON()
+                    }
+                }
 
                 VStack(spacing: 8) {
                     ForEach(check.items) { item in
@@ -2608,6 +3285,15 @@ struct DeviceHealthCheckPanel: View {
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                     .fixedSize(horizontal: false, vertical: true)
+                                if let command = item.repairCommand, !command.isEmpty {
+                                    Text(command)
+                                        .font(.system(.caption, design: .monospaced))
+                                        .foregroundStyle(.secondary)
+                                        .textSelection(.enabled)
+                                        .padding(6)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 6))
+                                }
                             }
                             Spacer()
                         }
@@ -2628,6 +3314,16 @@ struct DeviceHealthCheckPanel: View {
             RoundedRectangle(cornerRadius: 10)
                 .stroke(.separator, lineWidth: 1)
         )
+    }
+
+    private func healthSummaryCell(_ title: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.callout.weight(.semibold))
+        }
     }
 
     private func healthIcon(_ status: DeviceHealthItem.Status) -> String {
@@ -2702,6 +3398,7 @@ struct DeviceLocationControlPanel: View {
 
                 DeviceLocationMapPicker(store: store)
                 RoutePlaybackControlPanel(store: store, selectedDevice: selectedDevice)
+                RoutePlaybackTimelinePanel(store: store)
             } else {
                 Text(store.text("developer_devices_select_first"))
                     .foregroundStyle(.secondary)
@@ -3122,6 +3819,136 @@ struct RoutePlaybackControlPanel: View {
     }
 }
 
+struct RoutePlaybackTimelinePanel: View {
+    @Bindable var store: ScenarioStudioStore
+    private let speeds: [Double] = [0.5, 1, 2, 5]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .center, spacing: 12) {
+                Label(store.text("route_timeline"), systemImage: "slider.horizontal.3")
+                    .font(.headline)
+                Spacer()
+                Picker(store.text("playback_speed"), selection: $store.routePlaybackSpeed) {
+                    ForEach(speeds, id: \.self) { speed in
+                        Text(String(format: "%.1fx", speed)).tag(speed)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 220)
+
+                Toggle(store.text("loop_playback"), isOn: $store.routePlaybackLoops)
+                    .toggleStyle(.switch)
+            }
+
+            HStack {
+                Text(timeText(store.routeTimelineTime))
+                    .font(.caption.monospacedDigit())
+                Slider(
+                    value: Binding(
+                        get: { store.routeTimelineTime },
+                        set: { store.jumpRoutePlayback(to: $0) }
+                    ),
+                    in: 0...max(store.routeTimelineDuration, 1)
+                )
+                Text(timeText(store.routeTimelineDuration))
+                    .font(.caption.monospacedDigit())
+            }
+
+            HStack(spacing: 8) {
+                Button(store.text("play_route")) {
+                    store.startRoutePlayback()
+                }
+                .disabled(store.selectedDevice?.locationCapability.isAvailable != true || store.selectedScenario.route.isEmpty || store.routePlaybackState == .running)
+
+                Button(store.text("pause_route")) {
+                    store.pauseRoutePlayback()
+                }
+                .disabled(store.routePlaybackState != .running)
+
+                Button(store.text("resume_route")) {
+                    store.resumeRoutePlayback()
+                }
+                .disabled(store.routePlaybackState != .paused)
+
+                Button(store.text("stop_route")) {
+                    store.stopRoutePlayback()
+                }
+                .disabled(store.routePlaybackState == .idle)
+
+                Spacer()
+
+                if let coordinate = store.routeTimelinePreviewCoordinate {
+                    Text(String(format: store.text("timeline_preview_coordinate"), coordinate.latitude, coordinate.longitude))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            ScrollView(.horizontal) {
+                HStack(spacing: 8) {
+                    ForEach(store.routeTimelineSegments) { segment in
+                        Button {
+                            store.jumpRoutePlayback(to: segment.elapsedSeconds)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 5) {
+                                HStack(spacing: 5) {
+                                    Circle()
+                                        .fill(segment.id == store.selectedPointID ? .orange : .secondary)
+                                        .frame(width: 8, height: 8)
+                                    Text("\(segment.index + 1). \(segment.label)")
+                                        .font(.caption.weight(.semibold))
+                                        .lineLimit(1)
+                                }
+                                Text(timeText(segment.elapsedSeconds))
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                                HStack(spacing: 6) {
+                                    timelineMetric(store.text("dwell"), segment.dwellSeconds)
+                                    timelineMetric(store.text("segment"), segment.segmentSeconds)
+                                }
+                            }
+                            .padding(10)
+                            .frame(width: 170, alignment: .leading)
+                            .background(segment.id == store.selectedPointID ? Color.orange.opacity(0.14) : Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(segment.id == store.selectedPointID ? Color.orange.opacity(0.55) : Color.secondary.opacity(0.18), lineWidth: 1)
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(.separator, lineWidth: 1)
+        )
+    }
+
+    private func timelineMetric(_ title: String, _ value: TimeInterval) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(title)
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.secondary)
+            Text(timeText(value))
+                .font(.caption.monospacedDigit())
+        }
+    }
+
+    private func timeText(_ value: TimeInterval) -> String {
+        let total = max(0, Int(value.rounded()))
+        let minutes = total / 60
+        let seconds = total % 60
+        return String(format: "%02d:%02d", minutes, seconds)
+    }
+}
+
 struct XcodeDebugSessionPanel: View {
     @Bindable var store: ScenarioStudioStore
 
@@ -3290,6 +4117,7 @@ struct ScenarioEditorView: View {
                 ScenarioLibraryPanel(store: store)
                 ParameterizedTemplatePanel(store: store)
                 ScenarioMapPanel(store: store)
+                RoutePlaybackTimelinePanel(store: store)
                 RoutePointTable(store: store)
                 ExportPanel(title: "GPX", text: store.exportedGPX)
                 ExportPanel(title: store.text("scenario_json"), text: store.exportedJSON)
@@ -3322,6 +4150,9 @@ struct ScenarioLibraryPanel: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
+                Button(store.text("new_scenario")) {
+                    store.createScenario()
+                }
                 Button(store.text("duplicate_scenario")) {
                     store.duplicateSelectedScenario()
                 }
@@ -3334,12 +4165,73 @@ struct ScenarioLibraryPanel: View {
                 }
             }
 
+            Text(store.scenarioLibraryDirectoryPath)
+                .font(.system(.caption, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+
             HStack(spacing: 8) {
                 TextField(store.text("scenario_name"), text: $store.scenarioRenameText)
                     .textFieldStyle(.roundedBorder)
                     .frame(maxWidth: 360)
                 Button(store.text("rename_scenario")) {
                     store.renameSelectedScenario()
+                }
+                Button(store.text("import_scenario_file")) {
+                    store.importScenarioFile()
+                }
+                Button(store.text("export_scenario_file")) {
+                    store.exportSelectedScenarioFile()
+                }
+            }
+
+            HStack(spacing: 8) {
+                TextField(store.text("scenario_search"), text: $store.scenarioSearchText)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 280)
+
+                Picker(store.text("scenario_tag_filter"), selection: $store.selectedScenarioTag) {
+                    Text(store.text("all_tags")).tag(String?.none)
+                    ForEach(store.availableScenarioTags, id: \.self) { tag in
+                        Text(tag).tag(Optional(tag))
+                    }
+                }
+                .frame(maxWidth: 260)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text(store.text("scenario_tags"))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                FlowLayout(spacing: 6) {
+                    ForEach(store.selectedScenario.sortedTagPairs, id: \.key) { pair in
+                        HStack(spacing: 5) {
+                            Text("\(pair.key)=\(pair.value)")
+                            Button {
+                                store.removeSelectedScenarioTag(pair.key)
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .font(.caption)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.primary.opacity(0.07), in: Capsule())
+                    }
+                }
+
+                HStack(spacing: 8) {
+                    TextField(store.text("tag_key"), text: $store.scenarioTagKeyText)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 150)
+                    TextField(store.text("tag_value"), text: $store.scenarioTagValueText)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 180)
+                    Button(store.text("add_tag")) {
+                        store.addSelectedScenarioTag()
+                    }
                 }
             }
 
@@ -3356,6 +4248,19 @@ struct ScenarioLibraryPanel: View {
                         }
                     }
                 }
+            }
+
+            if let status = store.scenarioLibraryStatus {
+                Text(status)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if let error = store.scenarioLibrarySaveError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
             }
         }
         .padding(16)
@@ -3641,16 +4546,26 @@ struct StudioTelemetryPreviewPanel: View {
     @Bindable var store: ScenarioStudioStore
 
     var body: some View {
+        let scenarioPreview = store.telemetryPreview
         VStack(alignment: .leading, spacing: 14) {
-            Label(store.text("telemetry_preview"), systemImage: "doc.text.magnifyingglass")
-                .font(.title3.bold())
+            HStack {
+                Label(store.text("telemetry_preview"), systemImage: "doc.text.magnifyingglass")
+                    .font(.title3.bold())
+                Spacer()
+                Button(store.text("copy_fields")) {
+                    store.copyTelemetryPreviewFields()
+                }
+                Button(store.text("copy_json")) {
+                    store.copyTelemetryPreviewJSON()
+                }
+            }
 
             Text(store.text("telemetry_preview_description"))
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
             Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 8) {
-                ForEach(store.telemetryPreview.payloadFields, id: \.0) { key, value in
+                ForEach(scenarioPreview.payloadFields, id: \.0) { key, value in
                     GridRow {
                         Text(key)
                             .foregroundStyle(.secondary)
@@ -3661,11 +4576,40 @@ struct StudioTelemetryPreviewPanel: View {
                     }
                 }
             }
+
+            previewJSONBlock(title: store.text("scenario_payload_json"), json: scenarioPreview.prettyPrintedJSONString)
+
+            if let devicePreview = store.deviceTelemetryPreview {
+                HStack {
+                    Text(store.text("device_payload_json"))
+                        .font(.headline)
+                    Spacer()
+                    Button(store.text("copy_device_json")) {
+                        store.copyTelemetryPreviewJSON(deviceState: true)
+                    }
+                }
+                previewJSONBlock(title: nil, json: devicePreview.prettyPrintedJSONString)
+            }
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(.separator, lineWidth: 1))
+    }
+
+    private func previewJSONBlock(title: String?, json: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let title {
+                Text(title)
+                    .font(.headline)
+            }
+            TextEditor(text: .constant(json))
+                .font(.system(.caption, design: .monospaced))
+                .frame(height: 220)
+                .scrollContentBackground(.hidden)
+                .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(.separator, lineWidth: 1))
+        }
     }
 }
 
@@ -3749,15 +4693,6 @@ struct SettingsView: View {
 
 struct ScenarioMapPanel: View {
     @Bindable var store: ScenarioStudioStore
-    @State private var position: MapCameraPosition = .automatic
-
-    private var scenarioRouteCoordinates: [CLLocationCoordinate2D] {
-        store.selectedScenario.route.map(\.coordinate)
-    }
-
-    private var plannedRouteCoordinates: [CLLocationCoordinate2D] {
-        store.plannedRoute.map(\.coordinate)
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -3765,75 +4700,51 @@ struct ScenarioMapPanel: View {
                 Text(store.text("map"))
                     .font(.headline)
                 Spacer()
-                Button(store.text("fit_route")) {
-                    fitRoute()
-                }
-                Button(store.isPlanningRoute ? store.text("planning") : store.text("plan_route")) {
-                    Task {
-                        await store.planRoute()
-                        fitPlannedRoute()
+                Picker(store.text("route_mode"), selection: Binding(
+                    get: { store.routeMapMode },
+                    set: { store.setRouteMapMode($0) }
+                )) {
+                    ForEach(RouteMapMode.allCases) { mode in
+                        Text(mode.title(in: store)).tag(mode)
                     }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 240)
+
+                Button(store.isPlanningRoute ? store.text("planning") : store.text("plan_route")) {
+                    Task { await store.planRoute() }
                 }
                 .disabled(store.isPlanningRoute || store.selectedScenario.route.count < 2)
                 Button(store.text("apply_planned_route")) {
                     store.applyPlannedRoute()
-                    fitRoute()
                 }
                 .disabled(store.plannedRoute.isEmpty)
+                Button(store.text("swap_endpoints")) {
+                    store.swapRouteEndpoints()
+                }
+                .disabled(store.selectedScenario.route.count < 2)
             }
 
-            MapReader { proxy in
-                Map(position: $position) {
-                    if scenarioRouteCoordinates.count >= 2 {
-                        MapPolyline(coordinates: scenarioRouteCoordinates)
-                            .stroke(.blue, lineWidth: 3)
-                    }
+            if store.isPlannedRouteStale && store.routeMapMode == .roadPlanning {
+                Label(store.text("planned_route_stale"), systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
 
-                    if plannedRouteCoordinates.count >= 2 {
-                        MapPolyline(coordinates: plannedRouteCoordinates)
-                            .stroke(.green, style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round, dash: [8, 6]))
-                    }
-
-                    ForEach(store.selectedScenario.route) { point in
-                        Annotation(point.label ?? store.text("point"), coordinate: point.coordinate) {
-                            Button {
-                                store.selectPoint(point)
-                            } label: {
-                                ZStack {
-                                    Circle()
-                                        .fill(point.id == store.selectedPointID ? .orange : .red)
-                                        .frame(width: 18, height: 18)
-                                    Circle()
-                                        .stroke(.white, lineWidth: 2)
-                                        .frame(width: 18, height: 18)
-                                }
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                }
-                .mapStyle(.standard(elevation: .realistic))
+            EditableRouteMapView(store: store)
                 .frame(height: 430)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
                 .overlay(
                     RoundedRectangle(cornerRadius: 8)
                         .stroke(.separator, lineWidth: 1)
                 )
-                .onTapGesture { location in
-                    if let coordinate = proxy.convert(location, from: .local) {
-                        store.addPoint(at: coordinate)
-                    }
-                }
-                .onAppear(perform: fitRoute)
-                .onChange(of: store.selectedScenarioID) { _, _ in
-                    store.selectedPointID = store.selectedScenario.route.first?.id
-                    store.plannedRoute = []
-                    fitRoute()
-                }
-            }
+
+            RouteMetricsPanel(store: store)
 
             HStack(spacing: 14) {
                 Label(store.text("map_hint_add"), systemImage: "mappin.and.ellipse")
+                Label(store.text("map_hint_drag"), systemImage: "hand.draw")
+                Label(store.text("map_hint_delete"), systemImage: "trash")
                 Label(store.text("map_hint_blue"), systemImage: "point.topleft.down.curvedto.point.bottomright.up")
                 Label(store.text("map_hint_green"), systemImage: "arrow.triangle.turn.up.right.diamond")
             }
@@ -3841,39 +4752,222 @@ struct ScenarioMapPanel: View {
             .foregroundStyle(.secondary)
         }
     }
+}
 
-    private func fitRoute() {
-        let coordinates = scenarioRouteCoordinates
-        guard !coordinates.isEmpty else {
-            position = .automatic
-            return
+struct RouteMetricsPanel: View {
+    @Bindable var store: ScenarioStudioStore
+
+    var body: some View {
+        let metrics = store.selectedScenario.routeMetrics
+        HStack(spacing: 12) {
+            metric(store.text("total_distance"), distanceText(metrics.totalDistanceMeters))
+            metric(store.text("total_duration"), timeText(metrics.totalDurationSeconds))
+            metric(store.text("average_speed"), String(format: "%.2f m/s", metrics.averageSpeedMetersPerSecond))
+            metric(store.text("points"), "\(metrics.pointCount)")
+            metric(store.text("total_dwell"), timeText(metrics.totalDwellSeconds))
+            metric(store.text("route_mode"), store.routeMapMode.title(in: store))
         }
-        position = .region(region(for: coordinates))
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
     }
 
-    private func fitPlannedRoute() {
-        let coordinates = plannedRouteCoordinates.isEmpty ? scenarioRouteCoordinates : plannedRouteCoordinates
-        guard !coordinates.isEmpty else {
-            position = .automatic
-            return
+    private func metric(_ title: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.callout.monospacedDigit())
         }
-        position = .region(region(for: coordinates))
+        .frame(minWidth: 110, alignment: .leading)
     }
 
-    private func region(for coordinates: [CLLocationCoordinate2D]) -> MKCoordinateRegion {
-        let minLatitude = coordinates.map(\.latitude).min() ?? 31.2304
-        let maxLatitude = coordinates.map(\.latitude).max() ?? 31.2304
-        let minLongitude = coordinates.map(\.longitude).min() ?? 121.4737
-        let maxLongitude = coordinates.map(\.longitude).max() ?? 121.4737
-        let center = CLLocationCoordinate2D(
-            latitude: (minLatitude + maxLatitude) / 2,
-            longitude: (minLongitude + maxLongitude) / 2
-        )
-        let span = MKCoordinateSpan(
-            latitudeDelta: max((maxLatitude - minLatitude) * 1.6, 0.01),
-            longitudeDelta: max((maxLongitude - minLongitude) * 1.6, 0.01)
-        )
-        return MKCoordinateRegion(center: center, span: span)
+    private func distanceText(_ meters: Double) -> String {
+        meters >= 1000 ? String(format: "%.2f km", meters / 1000) : String(format: "%.0f m", meters)
+    }
+
+    private func timeText(_ value: TimeInterval) -> String {
+        let total = max(0, Int(value.rounded()))
+        return String(format: "%02d:%02d", total / 60, total % 60)
+    }
+}
+
+struct EditableRouteMapView: NSViewRepresentable {
+    @Bindable var store: ScenarioStudioStore
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(store: store)
+    }
+
+    func makeNSView(context: Context) -> MKMapView {
+        let mapView = MKMapView()
+        mapView.delegate = context.coordinator
+        mapView.mapType = .standard
+        let click = NSClickGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleMapClick(_:)))
+        click.buttonMask = 0x1
+        mapView.addGestureRecognizer(click)
+        context.coordinator.mapView = mapView
+        return mapView
+    }
+
+    func updateNSView(_ mapView: MKMapView, context: Context) {
+        context.coordinator.store = store
+        context.coordinator.mapView = mapView
+        context.coordinator.reload(mapView: mapView)
+    }
+
+    final class Coordinator: NSObject, MKMapViewDelegate {
+        var store: ScenarioStudioStore
+        weak var mapView: MKMapView?
+        private var hasFitInitialRoute = false
+
+        init(store: ScenarioStudioStore) {
+            self.store = store
+        }
+
+        @objc func handleMapClick(_ recognizer: NSClickGestureRecognizer) {
+            guard recognizer.state == .ended, let mapView else {
+                return
+            }
+            let point = recognizer.location(in: mapView)
+            let coordinate = mapView.convert(point, toCoordinateFrom: mapView)
+            store.addPoint(at: coordinate)
+        }
+
+        func reload(mapView: MKMapView) {
+            let selected = store.selectedPointID
+            mapView.removeAnnotations(mapView.annotations)
+            mapView.removeOverlays(mapView.overlays)
+
+            let route = store.selectedScenario.route
+            mapView.addAnnotations(route.enumerated().map { index, point in
+                RoutePointAnnotation(point: point, index: index, selected: point.id == selected)
+            })
+
+            let routeCoordinates = route.map(\.coordinate)
+            if routeCoordinates.count >= 2 {
+                mapView.addOverlay(RoutePolyline(coordinates: routeCoordinates, count: routeCoordinates.count, kind: .route))
+            }
+
+            let plannedCoordinates = store.routeMapMode == .roadPlanning ? store.plannedRoute.map(\.coordinate) : []
+            if plannedCoordinates.count >= 2 {
+                mapView.addOverlay(RoutePolyline(coordinates: plannedCoordinates, count: plannedCoordinates.count, kind: .planned))
+            }
+
+            if !hasFitInitialRoute {
+                fit(mapView: mapView, coordinates: plannedCoordinates.isEmpty ? routeCoordinates : plannedCoordinates)
+                hasFitInitialRoute = true
+            }
+        }
+
+        func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
+            guard let annotation = annotation as? RoutePointAnnotation else {
+                return nil
+            }
+            let identifier = "RoutePointAnnotation"
+            let view = mapView.dequeueReusableAnnotationView(withIdentifier: identifier) as? MKMarkerAnnotationView ??
+                MKMarkerAnnotationView(annotation: annotation, reuseIdentifier: identifier)
+            view.annotation = annotation
+            view.canShowCallout = true
+            view.isDraggable = true
+            view.markerTintColor = annotation.selected ? .systemOrange : .systemRed
+            view.glyphText = "\(annotation.index + 1)"
+            let menu = NSMenu()
+            let delete = NSMenuItem(title: store.text("remove"), action: #selector(deleteAnnotation(_:)), keyEquivalent: "")
+            delete.target = self
+            delete.representedObject = annotation.pointID
+            menu.addItem(delete)
+            view.menu = menu
+            return view
+        }
+
+        @objc private func deleteAnnotation(_ sender: NSMenuItem) {
+            guard let pointID = sender.representedObject as? String,
+                  let point = store.selectedScenario.route.first(where: { $0.id == pointID }) else {
+                return
+            }
+            store.removePoint(point)
+        }
+
+        func mapView(_ mapView: MKMapView, didSelect view: MKAnnotationView) {
+            guard let annotation = view.annotation as? RoutePointAnnotation,
+                  let point = store.selectedScenario.route.first(where: { $0.id == annotation.pointID }) else {
+                return
+            }
+            store.selectPoint(point)
+        }
+
+        func mapView(_ mapView: MKMapView, annotationView view: MKAnnotationView, didChange newState: MKAnnotationView.DragState, fromOldState oldState: MKAnnotationView.DragState) {
+            guard newState == .ending || newState == .canceling,
+                  let annotation = view.annotation as? RoutePointAnnotation else {
+                return
+            }
+            store.updatePoint(annotation.pointID, coordinate: annotation.coordinate)
+            view.dragState = .none
+        }
+
+        func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
+            guard let polyline = overlay as? RoutePolyline else {
+                return MKOverlayRenderer(overlay: overlay)
+            }
+            let renderer = MKPolylineRenderer(polyline: polyline)
+            switch polyline.kind {
+            case .route:
+                renderer.strokeColor = NSColor.systemBlue.withAlphaComponent(0.75)
+                renderer.lineWidth = 3
+            case .planned:
+                renderer.strokeColor = NSColor.systemGreen.withAlphaComponent(0.85)
+                renderer.lineWidth = 5
+                renderer.lineDashPattern = [8, 6]
+            }
+            return renderer
+        }
+
+        private func fit(mapView: MKMapView, coordinates: [CLLocationCoordinate2D]) {
+            guard !coordinates.isEmpty else {
+                return
+            }
+            let rect = coordinates.reduce(MKMapRect.null) { partial, coordinate in
+                let point = MKMapPoint(coordinate)
+                return partial.union(MKMapRect(x: point.x, y: point.y, width: 1, height: 1))
+            }
+            mapView.setVisibleMapRect(
+                rect,
+                edgePadding: NSEdgeInsets(top: 42, left: 42, bottom: 42, right: 42),
+                animated: true
+            )
+        }
+    }
+}
+
+final class RoutePointAnnotation: NSObject, MKAnnotation {
+    let pointID: String
+    let index: Int
+    let selected: Bool
+    dynamic var coordinate: CLLocationCoordinate2D
+    var title: String?
+
+    init(point: RoutePoint, index: Int, selected: Bool) {
+        self.pointID = point.id
+        self.index = index
+        self.selected = selected
+        self.coordinate = point.coordinate
+        self.title = point.label
+    }
+}
+
+final class RoutePolyline: MKPolyline {
+    enum Kind {
+        case route
+        case planned
+    }
+
+    var kind: Kind = .route
+
+    convenience init(coordinates: [CLLocationCoordinate2D], count: Int, kind: Kind) {
+        self.init(coordinates: coordinates, count: count)
+        self.kind = kind
     }
 }
 

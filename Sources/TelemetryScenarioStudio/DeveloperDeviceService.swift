@@ -38,12 +38,88 @@ struct DeveloperDevice: Identifiable, Hashable {
 }
 
 struct DeviceHealthCheck: Equatable {
+    var deviceName: String
+    var deviceKind: DeveloperDevice.Kind
     var deviceID: String
     var checkedAt: Date
     var items: [DeviceHealthItem]
 
     var hasBlockingFailure: Bool {
         items.contains { $0.status == .fail }
+    }
+
+    var summaryStatus: DeviceHealthItem.Status {
+        if items.contains(where: { $0.status == .fail }) {
+            return .fail
+        }
+        if items.contains(where: { $0.status == .warn }) {
+            return .warn
+        }
+        if items.contains(where: { $0.status == .unknown }) {
+            return .unknown
+        }
+        return .pass
+    }
+
+    var blockingFailureCount: Int {
+        items.filter { $0.status == .fail && $0.blocksLocationSimulation }.count
+    }
+
+    var markdownReport: String {
+        var lines: [String] = [
+            "# Device Health Report",
+            "",
+            "- Device: \(deviceName)",
+            "- Device ID: \(deviceID)",
+            "- Kind: \(deviceKind.rawValue)",
+            "- Checked At: \(ISO8601DateFormatter().string(from: checkedAt))",
+            "- Summary: \(summaryStatus.rawValue)",
+            "- Blocking Failures: \(blockingFailureCount)",
+            ""
+        ]
+
+        for item in items {
+            lines.append("## \(item.title)")
+            lines.append("- Status: \(item.status.rawValue)")
+            lines.append("- Blocks Location Simulation: \(item.blocksLocationSimulation ? "yes" : "no")")
+            lines.append("- Detail: \(item.detail)")
+            lines.append("- Recommendation: \(item.recommendation)")
+            if let command = item.repairCommand, !command.isEmpty {
+                lines.append("- Repair Command: `\(command)`")
+            }
+            lines.append("")
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    var jsonReport: String {
+        let report = DeviceHealthReportPayload(
+            deviceName: deviceName,
+            deviceID: deviceID,
+            deviceKind: deviceKind.rawValue,
+            checkedAt: checkedAt,
+            summaryStatus: summaryStatus.rawValue,
+            blockingFailureCount: blockingFailureCount,
+            items: items.map {
+                DeviceHealthReportItemPayload(
+                    id: $0.id,
+                    title: $0.title,
+                    status: $0.status.rawValue,
+                    detail: $0.detail,
+                    recommendation: $0.recommendation,
+                    repairCommand: $0.repairCommand,
+                    blocksLocationSimulation: $0.blocksLocationSimulation
+                )
+            }
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        guard let data = try? encoder.encode(report) else {
+            return "{}"
+        }
+        return String(decoding: data, as: UTF8.self)
     }
 }
 
@@ -60,6 +136,28 @@ struct DeviceHealthItem: Identifiable, Equatable {
     var status: Status
     var detail: String
     var recommendation: String
+    var repairCommand: String?
+    var blocksLocationSimulation = false
+}
+
+private struct DeviceHealthReportPayload: Codable {
+    var deviceName: String
+    var deviceID: String
+    var deviceKind: String
+    var checkedAt: Date
+    var summaryStatus: String
+    var blockingFailureCount: Int
+    var items: [DeviceHealthReportItemPayload]
+}
+
+private struct DeviceHealthReportItemPayload: Codable {
+    var id: String
+    var title: String
+    var status: String
+    var detail: String
+    var recommendation: String
+    var repairCommand: String?
+    var blocksLocationSimulation: Bool
 }
 
 struct DeveloperDeviceService {
@@ -97,13 +195,39 @@ struct DeveloperDeviceService {
     func runHealthCheck(device: DeveloperDevice) async -> DeviceHealthCheck {
         var items: [DeviceHealthItem] = []
 
+        items.append(await commandHealthItem(
+            id: "xcrun",
+            title: "Xcode xcrun",
+            executable: "/usr/bin/xcrun",
+            arguments: ["--find", "devicectl"],
+            repairCommand: "sudo xcode-select -s /Volumes/Build/dowl/Xcode.app/Contents/Developer"
+        ))
+
+        items.append(await commandHealthItem(
+            id: "devicectl",
+            title: "CoreDevice devicectl",
+            executable: "/usr/bin/xcrun",
+            arguments: ["devicectl", "list", "devices", "--timeout", "5"],
+            repairCommand: "xcrun devicectl list devices --timeout 5"
+        ))
+
+        items.append(await commandHealthItem(
+            id: "simctl",
+            title: "simctl",
+            executable: "/usr/bin/xcrun",
+            arguments: ["simctl", "list", "devices", "available"],
+            repairCommand: "xcrun simctl list devices available"
+        ))
+
         items.append(
             DeviceHealthItem(
                 id: "pairing",
                 title: "Pairing and trust",
                 status: device.pairingState == "paired" || device.kind == .simulator ? .pass : .fail,
                 detail: device.kind == .simulator ? "Simulator does not require pairing." : "Pairing state: \(device.pairingState ?? "unknown").",
-                recommendation: device.pairingState == "paired" || device.kind == .simulator ? "No action required." : "Unlock the iPhone, tap Trust, enable Developer Mode, then refresh devices."
+                recommendation: device.pairingState == "paired" || device.kind == .simulator ? "No action required." : "Unlock the iPhone, tap Trust, enable Developer Mode, then refresh devices.",
+                repairCommand: "xcrun devicectl list devices --timeout 5",
+                blocksLocationSimulation: device.kind == .physical && device.pairingState != "paired"
             )
         )
 
@@ -113,7 +237,9 @@ struct DeveloperDeviceService {
                 title: "Connection path",
                 status: device.isAvailable ? .pass : .warn,
                 detail: device.connectionSummary,
-                recommendation: device.isAvailable ? "No action required." : "Reconnect USB/Wi-Fi, keep the device unlocked, then refresh the device list."
+                recommendation: device.isAvailable ? "No action required." : "Reconnect USB/Wi-Fi, keep the device unlocked, then refresh the device list.",
+                repairCommand: "xcrun devicectl list devices --timeout 5",
+                blocksLocationSimulation: !device.isAvailable
             )
         )
 
@@ -126,7 +252,13 @@ struct DeveloperDeviceService {
 
         items.append(locationCapabilityHealthItem(device: device))
 
-        return DeviceHealthCheck(deviceID: device.id, checkedAt: Date(), items: items)
+        return DeviceHealthCheck(
+            deviceName: device.name,
+            deviceKind: device.kind,
+            deviceID: device.id,
+            checkedAt: Date(),
+            items: items
+        )
     }
 
     func clearLocation(device: DeveloperDevice) async throws {
@@ -356,13 +488,46 @@ struct DeveloperDeviceService {
         return udids
     }
 
+    private func commandHealthItem(
+        id: String,
+        title: String,
+        executable: String,
+        arguments: [String],
+        repairCommand: String
+    ) async -> DeviceHealthItem {
+        do {
+            _ = try await runAndCapture(executable, arguments: arguments, timeout: 8)
+            return DeviceHealthItem(
+                id: id,
+                title: title,
+                status: .pass,
+                detail: "\(executable) \(arguments.joined(separator: " ")) succeeded.",
+                recommendation: "No action required.",
+                repairCommand: repairCommand,
+                blocksLocationSimulation: false
+            )
+        } catch {
+            return DeviceHealthItem(
+                id: id,
+                title: title,
+                status: .fail,
+                detail: error.localizedDescription,
+                recommendation: "Run the repair command and refresh the health check.",
+                repairCommand: repairCommand,
+                blocksLocationSimulation: true
+            )
+        }
+    }
+
     private func simulatorHealthItem(device: DeveloperDevice) -> DeviceHealthItem {
         DeviceHealthItem(
             id: "simctl",
             title: "simctl location",
             status: device.isAvailable ? .pass : .fail,
             detail: "Simulator state: \(device.tunnelState ?? "unknown").",
-            recommendation: device.isAvailable ? "simctl can set simulator location." : "Boot the simulator and refresh the device list."
+            recommendation: device.isAvailable ? "simctl can set simulator location." : "Boot the simulator and refresh the device list.",
+            repairCommand: "xcrun simctl boot \(device.id)",
+            blocksLocationSimulation: !device.isAvailable
         )
     }
 
@@ -378,7 +543,9 @@ struct DeveloperDeviceService {
                 title: "Developer Mode visibility",
                 status: developerModeVisible ? .pass : .unknown,
                 detail: developerModeVisible ? "Developer Mode details are visible through devicectl." : "devicectl did not expose a Developer Mode field.",
-                recommendation: developerModeVisible ? "No action required." : "If location simulation fails, confirm Developer Mode is enabled on the iPhone."
+                recommendation: developerModeVisible ? "No action required." : "If location simulation fails, confirm Developer Mode is enabled on the iPhone.",
+                repairCommand: "xcrun devicectl device info details --device \(device.id)",
+                blocksLocationSimulation: false
             )
         )
 
@@ -389,7 +556,9 @@ struct DeveloperDeviceService {
                 title: "Developer Disk Image",
                 status: ddiVisible ? .pass : .unknown,
                 detail: ddiVisible ? "Developer Disk Image details were found in devicectl output." : "No DDI field was found in devicectl output.",
-                recommendation: ddiVisible ? "No action required." : "If DVT fails, open Xcode once or reconnect the device so CoreDevice can mount developer services."
+                recommendation: ddiVisible ? "No action required." : "If DVT fails, open Xcode once or reconnect the device so CoreDevice can mount developer services.",
+                repairCommand: "xcrun devicectl device info details --device \(device.id)",
+                blocksLocationSimulation: false
             )
         )
 
@@ -401,7 +570,9 @@ struct DeveloperDeviceService {
                         title: "pymobiledevice3 runtime",
                         status: .pass,
                         detail: python,
-                        recommendation: "No action required."
+                        recommendation: "No action required.",
+                        repairCommand: nil,
+                        blocksLocationSimulation: false
                     )
                 )
             } else {
@@ -411,7 +582,9 @@ struct DeveloperDeviceService {
                         title: "pymobiledevice3 runtime",
                         status: .fail,
                         detail: "No executable Python runtime with pymobiledevice3 support was found.",
-                        recommendation: "Restore .venv-pymobiledevice3/bin/python or install pymobiledevice3, then refresh."
+                        recommendation: "Restore .venv-pymobiledevice3/bin/python or install pymobiledevice3, then refresh.",
+                        repairCommand: "python3 -m venv .venv-pymobiledevice3 && .venv-pymobiledevice3/bin/python -m pip install pymobiledevice3",
+                        blocksLocationSimulation: true
                     )
                 )
             }
@@ -429,7 +602,9 @@ struct DeveloperDeviceService {
                     title: "CoreDevice tunnel",
                     status: tunnelIP == nil ? .fail : (rsdPort == nil ? .warn : .pass),
                     detail: "Tunnel IP: \(tunnelIP ?? "missing"), RSD port: \(rsdPort.map(String.init) ?? "missing").",
-                    recommendation: tunnelIP == nil ? "Refresh devices, keep the iPhone unlocked, and retry." : (rsdPort == nil ? "Refresh the device list and retry location simulation to refresh remotepairingd logs." : "No action required.")
+                    recommendation: tunnelIP == nil ? "Refresh devices, keep the iPhone unlocked, and retry." : (rsdPort == nil ? "Refresh the device list and retry location simulation to refresh remotepairingd logs." : "No action required."),
+                    repairCommand: "xcrun devicectl device info details --device \(device.id)",
+                    blocksLocationSimulation: tunnelIP == nil
                 )
             )
         } else {
@@ -440,7 +615,9 @@ struct DeveloperDeviceService {
                     title: "idevicesetlocation fallback",
                     status: hasIdeviceSetLocation ? .pass : .warn,
                     detail: hasIdeviceSetLocation ? "/opt/homebrew/bin/idevicesetlocation is available." : "idevicesetlocation is not installed.",
-                    recommendation: hasIdeviceSetLocation ? "No action required." : "Install libimobiledevice tools if this older iOS device needs location simulation."
+                    recommendation: hasIdeviceSetLocation ? "No action required." : "Install libimobiledevice tools if this older iOS device needs location simulation.",
+                    repairCommand: "brew install libimobiledevice",
+                    blocksLocationSimulation: false
                 )
             )
         }
@@ -456,7 +633,9 @@ struct DeveloperDeviceService {
                 title: "Location simulation capability",
                 status: .pass,
                 detail: "Simulator location can be controlled with simctl.",
-                recommendation: "No action required."
+                recommendation: "No action required.",
+                repairCommand: nil,
+                blocksLocationSimulation: false
             )
         case .dvtCoreDevice:
             return DeviceHealthItem(
@@ -464,7 +643,9 @@ struct DeveloperDeviceService {
                 title: "Location simulation capability",
                 status: .pass,
                 detail: "iOS 17+ CoreDevice DVT location simulation is available.",
-                recommendation: "No action required."
+                recommendation: "No action required.",
+                repairCommand: nil,
+                blocksLocationSimulation: false
             )
         case .ideviceSetLocation:
             return DeviceHealthItem(
@@ -472,7 +653,9 @@ struct DeveloperDeviceService {
                 title: "Location simulation capability",
                 status: .pass,
                 detail: "libimobiledevice idevicesetlocation fallback is available.",
-                recommendation: "No action required."
+                recommendation: "No action required.",
+                repairCommand: nil,
+                blocksLocationSimulation: false
             )
         case let .unavailable(reason):
             return DeviceHealthItem(
@@ -480,7 +663,9 @@ struct DeveloperDeviceService {
                 title: "Location simulation capability",
                 status: .fail,
                 detail: reason,
-                recommendation: "Resolve the failed checks above, then refresh devices."
+                recommendation: "Resolve the failed checks above, then refresh devices.",
+                repairCommand: "xcrun devicectl list devices --timeout 5",
+                blocksLocationSimulation: true
             )
         }
     }
